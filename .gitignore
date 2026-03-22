@@ -1,0 +1,30 @@
+# Data
+*.db
+*.db-wal
+*.db-shm
+*.pkl
+*.zip
+.env
+
+# Runtime
+state/
+logs/
+__pycache__/
+*.pyc
+*.pyo
+_oquants_tmp/
+
+# Output
+output/
+cache/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# OS
+nul
+*.png
+Thumbs.db
+.DS_Store
