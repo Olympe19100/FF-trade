@@ -1,0 +1,28 @@
+[project]
+name = "ff-calendar-spreads"
+version = "1.0.0"
+description = "Forward Factor Double Calendar Spread Strategy"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.20",
+    "pydantic>=2.0",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "scikit-learn>=1.2",
+    "requests>=2.28",
+    "ib_insync>=0.9.86",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "httpx>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

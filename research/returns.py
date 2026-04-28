@@ -3,14 +3,14 @@ Forward Factor Research — Step 2
 Compute calendar spread returns, closing as a spread 1 day before front expiry.
 
 Aligned with Forward Factors Research PDF methodology:
-  - Same strike front & back
+  - Same strike front & back (per leg: call leg and put leg may differ)
   - Valid bid/ask at exit
   - NO volume filter, NO earnings filter, NO min cost filter
     (FF threshold handles signal quality in analysis.py)
 
 Supports:
-  - Single calendar (call only)
-  - Double calendar (call ATM + put ATM at same strike)
+  - Single calendar (call only at 35Δ strike)
+  - Double calendar (call 35Δ + put 35Δ at different strikes)
 
 Return (single) = (back_call_mid - front_call_mid - spread_cost) / spread_cost
 Return (double) = (back_call+back_put - front_call-front_put - combined_cost) / combined_cost
@@ -22,6 +22,7 @@ Usage:
     python returns.py --test   # First 5 expiries only
 """
 
+import sys
 import sqlite3
 import numpy as np
 import pandas as pd
@@ -29,9 +30,8 @@ import pickle
 from pathlib import Path
 from datetime import datetime
 
-ROOT  = Path(r"C:\Users\ANTEC MSI\Desktop\pro\Option trading")
-DB    = ROOT / "sp500_options.db"
-CACHE = ROOT / "cache"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.config import ROOT, DB, CACHE
 
 
 def int_to_date(d):
@@ -81,11 +81,19 @@ def find_date_before(target_int, avail_dates, min_gap=1, max_gap=5):
 def compute_returns(test_mode=False):
     spreads = load_spreads()
 
-    # ── Filter: Same strike (fundamental to calendar spread definition) ──
-    strike_diff = (spreads["back_strike"] - spreads["front_strike"]).abs()
-    same_strike = strike_diff < 0.01
-    print(f"  Same strike: {same_strike.sum():,} / {len(spreads):,}")
-    spreads = spreads[same_strike].copy()
+    # ── Filter: Same strike per leg (call front~back, put front~back) ──
+    call_strike_diff = (spreads["back_strike"] - spreads["front_strike"]).abs()
+    same_call = call_strike_diff < 0.01
+    print(f"  Same call strike: {same_call.sum():,} / {len(spreads):,}")
+    spreads = spreads[same_call].copy()
+
+    # For puts: put_strike vs put_back_strike (if columns exist)
+    if "put_strike" in spreads.columns and "put_back_strike" in spreads.columns:
+        has_put_strikes = spreads["put_strike"].notna() & spreads["put_back_strike"].notna()
+        put_strike_diff = (spreads["put_back_strike"] - spreads["put_strike"]).abs()
+        same_put = ~has_put_strikes | (put_strike_diff < 0.01)
+        print(f"  Same put strike: {same_put.sum():,} / {len(spreads):,}")
+        spreads = spreads[same_put].copy()
 
     # Check spread_type availability
     has_type = "spread_type" in spreads.columns
@@ -227,13 +235,28 @@ def compute_returns(test_mode=False):
                 "call_exit_value": call_exit_val,
                 "ret": call_ret,
                 "spread_type": sp.get("spread_type", "single"),
+                "ba_pct": sp.get("ba_pct", np.nan),
+                "put_strike": sp.get("put_strike", np.nan),
+                "put_back_strike": sp.get("put_back_strike", np.nan),
             }
 
             # ── Put leg (double calendar): close as a spread ──
             is_double = has_type and sp.get("spread_type") == "double"
             if is_double:
-                put_front_mid = put_lookup.get(front_key)
-                put_back_mid = put_lookup.get(back_key)
+                # Use separate put strike (different from call strike)
+                if "put_strike" in sp.index and not pd.isna(sp.get("put_strike", np.nan)):
+                    put_front_key = (ticker, int(sp["front_exp"]),
+                                     int(round(sp["put_strike"] * 1000)))
+                else:
+                    put_front_key = front_key
+                if "put_back_strike" in sp.index and not pd.isna(sp.get("put_back_strike", np.nan)):
+                    put_back_key = (ticker, int(sp["back_exp"]),
+                                    int(round(sp["put_back_strike"] * 1000)))
+                else:
+                    put_back_key = back_key
+
+                put_front_mid = put_lookup.get(put_front_key)
+                put_back_mid = put_lookup.get(put_back_key)
                 combined_cost = sp.get("combined_cost", np.nan)
 
                 if (put_front_mid is not None and put_front_mid > 0

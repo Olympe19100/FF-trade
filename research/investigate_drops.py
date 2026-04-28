@@ -2,15 +2,15 @@
 Investigate the 73% drop rate in returns.py
 and survivorship bias.
 """
+import sys
 import numpy as np
 import pandas as pd
 import sqlite3
 from pathlib import Path
 from datetime import datetime
 
-ROOT  = Path(r"C:\Users\ANTEC MSI\Desktop\pro\Option trading")
-CACHE = ROOT / "cache"
-DB    = ROOT / "sp500_options.db"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.config import CACHE, DB
 
 # Load spreads and returns
 spreads = pd.read_pickle(str(CACHE / "calendar_spreads.pkl"))

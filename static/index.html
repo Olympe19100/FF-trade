@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Calendar Spread Trading</title>
+    <title>CS TERMINAL</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -11,12 +11,12 @@
         <!-- Header -->
         <header class="header">
             <div class="header-left">
-                <span class="header-logo">$ CS</span>
-                <span class="header-title">Calendar Spread Trading</span>
+                <span class="header-logo">CS TERMINAL</span>
+                <span class="header-title">DOUBLE CALENDAR SPREAD SYSTEM</span>
             </div>
             <div class="header-right">
                 <button id="conn-btn" class="connection-status">
-                    <span class="status-dot"></span> Connect IBKR
+                    <span class="status-dot"></span> IBKR OFFLINE
                 </button>
             </div>
         </header>
@@ -26,28 +26,29 @@
             <div class="nav-section">
                 <div class="nav-label">Trading</div>
                 <div class="nav-item active" data-tab="signals">
-                    <span class="icon">S</span> Signals
+                    <span class="icon">F1</span> SIGNALS
                     <span class="nav-badge" id="badge-signals"></span>
                 </div>
                 <div class="nav-item" data-tab="portfolio">
-                    <span class="icon">P</span> Portfolio
+                    <span class="icon">F2</span> PORTFOLIO
                     <span class="nav-badge" id="badge-portfolio"></span>
                 </div>
                 <div class="nav-item" data-tab="orders">
-                    <span class="icon">O</span> Orders
+                    <span class="icon">F3</span> ORDERS
+                </div>
+                <div class="nav-item" data-tab="monitor" style="display:none">
+                    <span class="icon">F4</span> MONITOR
+                    <span class="nav-badge" id="badge-monitor"></span>
                 </div>
             </div>
 
             <div class="nav-section">
                 <div class="nav-label">Analytics</div>
-                <div class="nav-item" data-tab="kelly">
-                    <span class="icon">K</span> Kelly
-                </div>
-                <div class="nav-item" data-tab="risk">
-                    <span class="icon">R</span> Risk
+                <div class="nav-item" data-tab="track-record">
+                    <span class="icon">F5</span> TRACK RECORD
                 </div>
                 <div class="nav-item" data-tab="straddle">
-                    <span class="icon">V</span> Vol Ramp
+                    <span class="icon">F6</span> VOL RAMP
                     <span class="nav-badge" id="badge-straddle"></span>
                 </div>
             </div>
@@ -58,8 +59,8 @@
                     <span class="stat-value" id="stat-account">-</span>
                 </div>
                 <div class="stat-row">
-                    <span class="stat-label">Kelly f</span>
-                    <span class="stat-value accent" id="stat-kelly">-</span>
+                    <span class="stat-label">Win Rate</span>
+                    <span class="stat-value accent" id="stat-winrate">-</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Positions</span>
@@ -68,6 +69,10 @@
                 <div class="stat-row">
                     <span class="stat-label">Deployed</span>
                     <span class="stat-value green" id="stat-deployed">-</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Unrl P&L</span>
+                    <span class="stat-value" id="stat-unrealized">-</span>
                 </div>
             </div>
         </nav>
@@ -92,20 +97,20 @@
                 </div>
             </div>
 
-            <div id="tab-kelly" class="tab-content">
-                <div id="kelly-content">
-                    <div class="loading"><div class="spinner"></div> Loading...</div>
-                </div>
-            </div>
-
-            <div id="tab-risk" class="tab-content">
-                <div id="risk-content">
+            <div id="tab-track-record" class="tab-content">
+                <div id="track-record-content">
                     <div class="loading"><div class="spinner"></div> Loading...</div>
                 </div>
             </div>
 
             <div id="tab-straddle" class="tab-content">
                 <div id="straddle-content">
+                    <div class="loading"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+
+            <div id="tab-monitor" class="tab-content">
+                <div id="monitor-content">
                     <div class="loading"><div class="spinner"></div> Loading...</div>
                 </div>
             </div>
@@ -116,9 +121,9 @@
     <div id="connect-modal" class="modal-backdrop">
         <div class="modal">
             <div class="modal-title">Connect to IBKR</div>
-            <label style="font-size:13px;color:var(--text-secondary)">Host</label>
+            <label style="font-size:11px;color:var(--text-secondary)">Host</label>
             <input id="ibkr-host" type="text" value="127.0.0.1" placeholder="127.0.0.1">
-            <label style="font-size:13px;color:var(--text-secondary)">Port (4002=Gateway, 7497=TWS)</label>
+            <label style="font-size:11px;color:var(--text-secondary)">Port (4002=Gateway, 7497=TWS)</label>
             <input id="ibkr-port" type="number" value="4002" placeholder="4002">
             <div class="modal-actions">
                 <button class="btn" onclick="closeModal('connect-modal')">Cancel</button>
@@ -131,11 +136,25 @@
     <div id="order-modal" class="modal-backdrop">
         <div class="modal">
             <div class="modal-title">Confirm Optimal Execution</div>
-            <div id="order-confirm-body" style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">
+            <div id="order-confirm-body" style="font-size:11px; color:var(--text-secondary); margin-bottom:12px;">
             </div>
             <div class="modal-actions">
                 <button class="btn" onclick="closeModal('order-modal')">Cancel</button>
                 <button class="btn btn-primary" onclick="confirmPlaceOrders()">Place Orders</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Position Modal -->
+    <div id="add-position-modal" class="modal-backdrop">
+        <div class="modal" style="max-width:420px;">
+            <div class="modal-title">Add to Portfolio</div>
+            <div id="add-position-body" style="font-size:11px; color:var(--text-secondary); margin-bottom:12px;"></div>
+            <label style="font-size:11px;color:var(--text-secondary)">Contracts</label>
+            <input id="add-pos-contracts" type="number" min="1" max="10" value="1" style="width:80px;">
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal('add-position-modal')">Cancel</button>
+                <button class="btn btn-primary" id="add-pos-confirm" onclick="confirmAddPosition()">Add</button>
             </div>
         </div>
     </div>

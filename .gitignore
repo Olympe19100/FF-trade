@@ -4,7 +4,14 @@
 *.db-shm
 *.pkl
 *.zip
+
+# Secrets
 .env
+creds.txt
+config.toml
+
+# Binaries
+*.jar
 
 # Runtime
 state/

@@ -5,15 +5,15 @@ Our returns are ~20x higher than PDF reference:
   - Our win rate: 87.7% vs PDF: 47.8%
   - Our max: 116.1 vs PDF: 3.35
 """
+import sys
 import numpy as np
 import pandas as pd
 import sqlite3
 from pathlib import Path
 from datetime import datetime
 
-ROOT  = Path(r"C:\Users\ANTEC MSI\Desktop\pro\Option trading")
-CACHE = ROOT / "cache"
-DB    = ROOT / "sp500_options.db"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.config import CACHE, DB
 
 # Load returns
 df = pd.read_pickle(str(CACHE / "spread_returns.pkl"))

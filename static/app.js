@@ -6,6 +6,8 @@ const API = '';
 let state = { connected: false, account: null, accountValue: 1023443 };
 let refreshTimer = null;
 let scannerPollTimer = null;
+let _signalsList = [];  // cached for add-to-portfolio modal
+let _pendingSignal = null;  // signal being added
 
 // ── Formatters ──
 const fmt = {
@@ -53,9 +55,9 @@ function loadTab(tabId) {
         signals: loadSignals,
         portfolio: loadPortfolio,
         orders: loadOrders,
-        kelly: loadKelly,
-        risk: loadRisk,
+        'track-record': loadTrackRecord,
         straddle: loadStraddle,
+        monitor: loadMonitor,
     };
     if (loaders[tabId]) loaders[tabId]();
 }
@@ -72,21 +74,32 @@ async function refreshStatus() {
         const btn = document.getElementById('conn-btn');
         if (data.connected) {
             btn.classList.add('connected');
-            btn.innerHTML = `<span class="status-dot"></span> ${data.account}`;
+            btn.innerHTML = `<span class="status-dot"></span> IBKR: ${data.account}`;
         } else {
             btn.classList.remove('connected');
-            btn.innerHTML = `<span class="status-dot"></span> Connect IBKR`;
+            btn.innerHTML = `<span class="status-dot"></span> IBKR OFFLINE`;
         }
 
         // Update sidebar stats
         document.getElementById('stat-account').textContent = fmt.usd(state.accountValue);
-        document.getElementById('stat-kelly').textContent = (data.kelly_f * 100).toFixed(1) + '%';
+        document.getElementById('stat-winrate').textContent = data.win_rate != null ? (data.win_rate * 100).toFixed(0) + '%' : '-';
         document.getElementById('stat-positions').textContent = `${data.n_active}/${data.max_positions}`;
         document.getElementById('stat-deployed').textContent = fmt.usd(data.total_deployed);
 
         // Update signal badge
         const sigBadge = document.getElementById('badge-signals');
         if (sigBadge) sigBadge.textContent = '';  // will update when signals load
+
+        // Update unrealized P&L in sidebar (async, non-blocking)
+        api('/api/portfolio').then(pdata => {
+            const unrealEl = document.getElementById('stat-unrealized');
+            if (unrealEl && pdata.account_summary) {
+                const u = pdata.account_summary.total_unrealized_pnl || 0;
+                const hasPrices = pdata.account_summary.n_priced > 0;
+                unrealEl.textContent = hasPrices ? fmt.pnl(u) : '-';
+                unrealEl.className = 'stat-value ' + (u >= 0 ? 'green' : 'red');
+            }
+        }).catch(() => {});
     } catch (e) {
         console.error('Status refresh failed:', e);
     }
@@ -106,14 +119,17 @@ async function loadSignals() {
         <div class="section-header">
             <h2 class="section-title">Scanner Signals & Kelly Sizing</h2>
             <div class="btn-group">
+                <button class="btn btn-primary" onclick="autoManage()" id="btn-manage">
+                    Auto-Manage
+                </button>
                 <button class="btn" onclick="runScanner()" id="btn-scan">
                     Run Scanner
                 </button>
-                <button class="btn btn-primary" onclick="showOrderConfirm()" id="btn-place"
+                <button class="btn" onclick="showOrderConfirm()" id="btn-place"
                     ${!state.connected ? 'disabled title="Connect IBKR first"' : ''}>
                     Place Orders
                 </button>
-                <button class="btn btn-primary" onclick="scanAndEnter()" id="btn-scan-enter"
+                <button class="btn" onclick="scanAndEnter()" id="btn-scan-enter"
                     ${!state.connected ? 'disabled title="Connect IBKR first"' : ''}>
                     Scan + Execute
                 </button>
@@ -154,43 +170,54 @@ async function loadSignals() {
 
         <div class="table-wrapper">
             <div class="table-header">
-                <span class="table-title">Kelly-Optimized Sizing (${data.n_positions} positions)</span>
+                <span class="table-title">Double Calendar Signals (${data.n_positions} positions)</span>
             </div>
             <table>
                 <thead>
                     <tr>
-                        <th>Ticker</th><th>Combo</th><th>Strike</th><th>Stock</th>
-                        <th>FF%</th><th>Type</th><th>Ctr</th><th>Deployed</th>
+                        <th></th>
+                        <th>Ticker</th><th>Combo</th><th>CallK</th><th>PutK</th><th>Stock</th>
+                        <th>FF%</th><th>BA%</th><th>Ctr</th><th>Deployed</th>
                         <th>Front</th><th>Back</th>
                         <th>IV F/B</th>
-                        <th>Call</th><th>Put</th><th>Total</th><th>Vol</th>
+                        <th>Call</th><th>Put</th><th>Total</th>
                     </tr>
                 </thead>
                 <tbody>`;
 
-        for (const s of data.sizing) {
+        const activeTickers = new Set(data.active_tickers || []);
+        _signalsList = data.sizing;
+
+        for (let i = 0; i < data.sizing.length; i++) {
+            const s = data.sizing[i];
             const ffClass = s.ff > 100 ? 'green' : s.ff > 50 ? 'accent' : '';
             const ivStr = (s.front_iv && s.back_iv) ? `${s.front_iv.toFixed(0)}/${s.back_iv.toFixed(0)}` : '-';
-            const isDbl = s.dbl_cost && s.dbl_cost > 0;
-            const typeLabel = isDbl ? 'DBL' : 'SGL';
-            const typeClass = isDbl ? 'cell-pos' : 'cell-neg';
-            const totalCost = isDbl ? s.dbl_cost : s.call_cost;
+            const totalCost = s.dbl_cost || s.call_cost;
+            const baPct = s.ba_pct != null ? (s.ba_pct * 100) : null;
+            const baClass = baPct == null ? '' : baPct <= 5 ? 'cell-pos' : baPct <= 10 ? 'cell-ff' : 'cell-neg';
+            const baStr = baPct != null ? baPct.toFixed(1) + '%' : '-';
+            const inPortfolio = activeTickers.has(s.ticker);
+            const addBtn = inPortfolio
+                ? `<span style="color:var(--green);font-size:11px;font-weight:700;">IN</span>`
+                : `<button class="btn btn-sm" style="padding:2px 8px;font-size:11px;" onclick="showAddModal(${i})" id="add-${s.ticker}">+Add</button>`;
+            const putK = s.put_strike ? fmt.usd(s.put_strike) : '-';
             html += `<tr>
+                <td>${addBtn}</td>
                 <td class="cell-ticker">${s.ticker}</td>
                 <td>${s.combo || '-'}</td>
                 <td>${fmt.usd(s.strike)}</td>
+                <td>${putK}</td>
                 <td>${fmt.usd2(s.stock_px)}</td>
                 <td class="cell-ff ${ffClass}">${fmt.pct(s.ff)}</td>
-                <td class="${typeClass}" style="font-weight:700">${typeLabel}</td>
+                <td class="${baClass}">${baStr}</td>
                 <td>${s.contracts}</td>
                 <td>${fmt.usd(s.deployed)}</td>
                 <td>${s.front_exp ? s.front_exp.substring(5) : '-'}</td>
                 <td>${s.back_exp ? s.back_exp.substring(5) : '-'}</td>
                 <td>${ivStr}</td>
                 <td>${s.call_cost ? fmt.usd2(s.call_cost) : '-'}</td>
-                <td>${s.put_cost ? fmt.usd2(s.put_cost) : '<span class="cell-neg">--</span>'}</td>
+                <td>${s.put_cost ? fmt.usd2(s.put_cost) : '-'}</td>
                 <td class="accent" style="font-weight:700">${totalCost ? fmt.usd2(totalCost) : '-'}</td>
-                <td>${s.volume != null ? s.volume : '-'}</td>
             </tr>`;
         }
 
@@ -201,7 +228,7 @@ async function loadSignals() {
     }
 }
 
-// ── Portfolio Tab ──
+// ── Portfolio Tab (Paper Trading Dashboard) ──
 async function loadPortfolio() {
     const container = document.getElementById('portfolio-content');
     container.innerHTML = '<div class="loading"><div class="spinner"></div> Loading portfolio...</div>';
@@ -211,82 +238,218 @@ async function loadPortfolio() {
         const badge = document.getElementById('badge-portfolio');
         if (badge) badge.textContent = data.n_active || '';
 
+        const acctSummary = data.account_summary || {};
+        const unrealizedPnl = acctSummary.total_unrealized_pnl || 0;
+        const realizedPnl = acctSummary.realized_pnl || 0;
+        const cash = state.accountValue - data.total_deployed;
+        const accountVal = state.accountValue + unrealizedPnl + realizedPnl;
+
+        // Update sidebar stat
+        const unrealEl = document.getElementById('stat-unrealized');
+        if (unrealEl) {
+            unrealEl.textContent = acctSummary.n_priced > 0 ? fmt.pnl(unrealizedPnl) : '-';
+            unrealEl.className = 'stat-value ' + (unrealizedPnl >= 0 ? 'green' : 'red');
+        }
+
         let html = `
         <div class="section-header">
-            <h2 class="section-title">Active Portfolio</h2>
+            <h2 class="section-title">Portfolio Dashboard</h2>
             <div class="btn-group">
-                <button class="btn btn-danger" onclick="closeExpiring()" ${!state.connected ? 'disabled' : ''}>
-                    Close Expiring
+                <button class="btn" onclick="refreshPortfolioPrices()" id="btn-portfolio-refresh"
+                    ${data.refresh_running ? 'disabled' : ''}>
+                    ${data.refresh_running ? '<span class="btn-spinner"></span> Pricing...' : 'Refresh Prices'}
+                </button>
+                <button class="btn btn-primary" onclick="autoManage()" id="btn-manage">
+                    Auto-Manage
                 </button>
             </div>
         </div>
 
         <div class="metrics-row">
             <div class="metric-card">
-                <div class="metric-label">Active Positions</div>
-                <div class="metric-value">${data.n_active}/20</div>
+                <div class="metric-label">Account Value</div>
+                <div class="metric-value">${fmt.usd(accountVal)}</div>
+                <div class="metric-sub">Base: ${fmt.usd(state.accountValue)}</div>
+            </div>
+            <div class="metric-card ${unrealizedPnl >= 0 ? 'risk-kpi-green' : 'risk-kpi-red'}">
+                <div class="metric-label">Unrealized P&L</div>
+                <div class="metric-value ${unrealizedPnl >= 0 ? 'green' : 'red'}">${acctSummary.n_priced > 0 ? fmt.pnl(unrealizedPnl) : '-'}</div>
+                <div class="metric-sub">${data.cached_date ? 'ThetaData ' + data.cached_date : 'Click Refresh Prices'}</div>
+            </div>
+            <div class="metric-card ${realizedPnl >= 0 ? 'risk-kpi-green' : 'risk-kpi-red'}">
+                <div class="metric-label">Realized P&L</div>
+                <div class="metric-value ${realizedPnl >= 0 ? 'green' : 'red'}">${data.closed.length > 0 ? fmt.pnl(realizedPnl) : '-'}</div>
+                <div class="metric-sub">${acctSummary.n_wins || 0}W / ${acctSummary.n_losses || 0}L</div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Total Deployed</div>
                 <div class="metric-value">${fmt.usd(data.total_deployed)}</div>
             </div>
+            <div class="metric-card">
+                <div class="metric-label">Cash</div>
+                <div class="metric-value green">${fmt.usd(cash)}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Positions</div>
+                <div class="metric-value">${data.n_active}/20</div>
+            </div>
         </div>`;
 
+        // ── Active Positions Table ──
         if (data.active.length === 0) {
             html += `<div class="table-wrapper"><div style="padding: 40px; text-align: center; color: var(--text-secondary);">
-                No active positions. Place orders from the Signals tab.
+                No active positions. Add signals from the Signals tab.
             </div></div>`;
         } else {
+            let totalPnl = 0;
+            let totalDeployed = 0;
+
             html += `<div class="table-wrapper">
-            <div class="table-header"><span class="table-title">Active Positions</span></div>
+            <div class="table-header">
+                <span class="table-title">Active Positions (${data.n_active})</span>
+                ${data.cached_date ? '<span style="font-size:12px;color:var(--text-muted)">Prices: ' + data.cached_date + '</span>' : ''}
+            </div>
             <table><thead><tr>
-                <th>Ticker</th><th>Combo</th><th>Strike</th><th>Type</th>
-                <th>Ctr</th><th>Cost</th><th>Deployed</th><th>FF%</th>
-                <th>Front Exp</th><th>Days</th><th>Entry</th>
+                <th>Ticker</th><th>Combo</th><th>CallK/PutK</th><th>Cts</th>
+                <th>Entry</th><th>Current</th><th>P&L</th><th>Ret%</th>
+                <th>DTE</th><th>FF%</th><th>Stock</th><th>Entry Date</th><th></th>
             </tr></thead><tbody>`;
 
-            for (const p of data.active) {
-                const daysClass = p.days_to_exp <= 5 ? 'cell-neg' : p.days_to_exp <= 14 ? 'cell-ff' : '';
+            const sorted = [...data.active].sort((a, b) => {
+                const aPnl = a.unrealized_pnl != null ? a.unrealized_pnl : -Infinity;
+                const bPnl = b.unrealized_pnl != null ? b.unrealized_pnl : -Infinity;
+                return bPnl - aPnl;
+            });
+
+            for (const p of sorted) {
+                const dte = p.days_to_exp != null ? p.days_to_exp + 'd' : '-';
+                const dteClass = p.days_to_exp != null && p.days_to_exp <= 5 ? 'cell-neg' : p.days_to_exp != null && p.days_to_exp <= 14 ? 'cell-ff' : '';
+                const ffStr = p.ff != null ? (p.ff >= 1 ? p.ff.toFixed(0) : (p.ff * 100).toFixed(1)) + '%' : '-';
+                const putK = p.put_strike && p.put_strike !== p.strike ? '/' + Number(p.put_strike).toFixed(0) : '';
+                const strikeStr = Number(p.strike).toFixed(0) + putK;
+                totalDeployed += p.total_deployed || 0;
+
+                const hasPx = p.current_cost != null;
+                const pnlVal = p.unrealized_pnl || 0;
+                const retPct = p.return_pct != null ? (p.return_pct * 100).toFixed(1) + '%' : '-';
+                const pnlClass = pnlVal >= 0 ? 'cell-pos' : 'cell-neg';
+
+                if (hasPx) totalPnl += pnlVal;
+
                 html += `<tr>
                     <td class="cell-ticker">${p.ticker}</td>
-                    <td>${p.combo}</td>
-                    <td>${fmt.usd(p.strike)}</td>
-                    <td>${p.spread_type}</td>
+                    <td>${p.combo || '-'}</td>
+                    <td>${strikeStr}</td>
                     <td>${p.contracts}</td>
                     <td>${fmt.usd2(p.cost_per_share)}</td>
-                    <td>${fmt.usd(p.total_deployed)}</td>
-                    <td class="cell-ff">${fmt.pct(p.ff)}</td>
-                    <td>${p.front_exp}</td>
-                    <td class="${daysClass}">${p.days_to_exp}d</td>
-                    <td>${p.entry_date}</td>
+                    <td>${hasPx ? fmt.usd2(p.current_cost) : '<span style="color:var(--text-muted)">--</span>'}</td>
+                    <td class="${hasPx ? pnlClass : ''}">${hasPx ? fmt.pnl(pnlVal) : '<span style="color:var(--text-muted)">--</span>'}</td>
+                    <td class="${hasPx ? pnlClass : ''}">${hasPx ? retPct : '<span style="color:var(--text-muted)">--</span>'}</td>
+                    <td class="${dteClass}">${dte}</td>
+                    <td class="cell-ff">${ffStr}</td>
+                    <td>${p.stock_px != null ? fmt.usd2(p.stock_px) : '<span style="color:var(--text-muted)">--</span>'}</td>
+                    <td>${p.entry_date || '-'}</td>
+                    <td><button class="btn-close-pos" onclick="closePosition('${p.id}', '${p.ticker}')" title="Close position">X</button></td>
                 </tr>`;
             }
+
+            // Total row
+            if (acctSummary.n_priced > 0) {
+                const pnlClass = totalPnl >= 0 ? 'cell-pos' : 'cell-neg';
+                html += `<tr style="font-weight:700;background:var(--bg-secondary)">
+                    <td>TOTAL</td><td></td><td></td><td></td><td></td><td></td>
+                    <td class="${pnlClass}">${fmt.pnl(totalPnl)}</td>
+                    <td></td><td></td><td></td><td></td><td></td><td></td>
+                </tr>`;
+            }
+
             html += '</tbody></table></div>';
         }
 
+        // ── Closed Positions Table ──
         if (data.closed.length > 0) {
             html += `<div class="table-wrapper" style="margin-top: 24px;">
             <div class="table-header"><span class="table-title">Closed Positions (${data.closed.length})</span></div>
             <table><thead><tr>
-                <th>Ticker</th><th>Combo</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Return</th>
+                <th>Ticker</th><th>Combo</th><th>Entry$</th><th>Exit$</th><th>P&L</th><th>Return</th>
+                <th>Entry Date</th><th>Exit Date</th>
             </tr></thead><tbody>`;
             for (const p of data.closed) {
                 const pnlClass = (p.pnl || 0) >= 0 ? 'cell-pos' : 'cell-neg';
                 html += `<tr>
                     <td class="cell-ticker">${p.ticker}</td>
                     <td>${p.combo}</td>
+                    <td>${fmt.usd2(p.cost_per_share)}</td>
+                    <td>${p.exit_price != null ? fmt.usd2(p.exit_price) : '-'}</td>
+                    <td class="${pnlClass}">${fmt.pnl(p.pnl)}</td>
+                    <td class="${pnlClass}">${p.return_pct != null ? (p.return_pct * 100).toFixed(1) + '%' : '-'}</td>
                     <td>${p.entry_date}</td>
                     <td>${p.exit_date || '-'}</td>
-                    <td class="${pnlClass}">${fmt.pnl(p.pnl)}</td>
-                    <td class="${pnlClass}">${p.exit_price ? fmt.pct2((p.exit_price - p.cost_per_share) / p.cost_per_share * 100) : '-'}</td>
+                </tr>`;
+            }
+            html += '</tbody></table></div>';
+        }
+
+        // ── P&L History ──
+        const pnlHistory = data.pnl_history || [];
+        if (pnlHistory.length > 0) {
+            html += `<div class="table-wrapper" style="margin-top: 24px;">
+            <div class="table-header"><span class="table-title">P&L History (${pnlHistory.length} snapshots)</span></div>
+            <table><thead><tr>
+                <th>Date</th><th>Positions</th><th>Unrealized P&L</th>
+            </tr></thead><tbody>`;
+            for (const h of pnlHistory.slice().reverse().slice(0, 30)) {
+                const pnlClass = (h.total_pnl || 0) >= 0 ? 'cell-pos' : 'cell-neg';
+                html += `<tr>
+                    <td>${h.date}</td>
+                    <td>${h.n_positions}</td>
+                    <td class="${pnlClass}">${fmt.pnl(h.total_pnl)}</td>
                 </tr>`;
             }
             html += '</tbody></table></div>';
         }
 
         container.innerHTML = html;
+
+        // If refresh was running, start polling
+        if (data.refresh_running) {
+            pollRefreshStatus(function() { loadPortfolio(); });
+        }
     } catch (e) {
         container.innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+    }
+}
+
+async function closePosition(positionId, ticker) {
+    if (!confirm(`Close position ${ticker}? This will record the P&L based on latest cached price.`)) return;
+
+    try {
+        const result = await api('/api/portfolio/close', {
+            method: 'POST',
+            body: JSON.stringify({ position_id: positionId }),
+        });
+        showToast(`Closed ${result.ticker}: P&L ${fmt.pnl(result.pnl)} (${(result.return_pct * 100).toFixed(1)}%)`);
+        loadPortfolio();
+        refreshStatus();
+    } catch (e) {
+        alert('Close error: ' + e.message);
+    }
+}
+
+async function refreshPortfolioPrices() {
+    const btn = document.getElementById('btn-portfolio-refresh');
+    if (!btn) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-spinner"></span> Pricing...';
+
+    try {
+        await api('/api/monitor/refresh', { method: 'POST' });
+        pollRefreshStatus(function() { loadPortfolio(); });
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Refresh Prices';
+        alert('Refresh error: ' + e.message);
     }
 }
 
@@ -505,237 +668,99 @@ async function loadOrders() {
 }
 
 // ── Kelly Tab ──
-async function loadKelly() {
-    const container = document.getElementById('kelly-content');
-    container.innerHTML = '<div class="loading"><div class="spinner"></div> Loading Kelly data...</div>';
+// ── Track Record Tab ──
+async function loadTrackRecord() {
+    const container = document.getElementById('track-record-content');
+    container.innerHTML = '<div class="loading"><div class="spinner"></div> Loading track record...</div>';
 
     try {
-        const data = await api(`/api/kelly?account_value=${state.accountValue}`);
+        const data = await api('/api/track-record');
 
-        const spreadPct = (data.kelly_f * 100).toFixed(1);
-        const cashPct = (100 - data.kelly_f * 100).toFixed(1);
+        function metricsTable(title, m) {
+            if (!m) return `<div class="table-wrapper">
+                <div class="table-header"><span class="table-title">${title}</span></div>
+                <div style="padding:24px;color:var(--text-secondary);text-align:center;">No trades yet</div>
+            </div>`;
+            return `<div class="table-wrapper">
+                <div class="table-header"><span class="table-title">${title}</span></div>
+                <table class="kelly-table"><tbody>
+                    <tr><td>CAGR</td><td class="cell-pos">${(m.cagr * 100).toFixed(1)}%</td></tr>
+                    <tr><td>Sharpe</td><td>${m.sharpe.toFixed(2)}</td></tr>
+                    <tr><td>Sortino</td><td>${m.sortino.toFixed(2)}</td></tr>
+                    <tr><td>Max Drawdown</td><td class="cell-neg">${(m.max_dd * 100).toFixed(1)}%</td></tr>
+                    <tr><td>Win Rate</td><td>${(m.win_rate * 100).toFixed(1)}%</td></tr>
+                    <tr><td>Profit Factor</td><td>${m.profit_factor === Infinity ? '∞' : m.profit_factor.toFixed(2)}</td></tr>
+                    <tr><td>Avg Win</td><td class="cell-pos">${(m.avg_win * 100).toFixed(2)}%</td></tr>
+                    <tr><td>Avg Loss</td><td class="cell-neg">${(m.avg_loss * 100).toFixed(2)}%</td></tr>
+                    <tr><td>Total Trades</td><td style="color:var(--accent)">${m.total_trades}</td></tr>
+                    <tr><td>Total P&L</td><td class="${m.total_pnl >= 0 ? 'cell-pos' : 'cell-neg'}">${fmt.usd(m.total_pnl)}</td></tr>
+                    <tr><td>Final Equity</td><td style="color:var(--accent);font-size:16px">${fmt.usd(m.final_equity)}</td></tr>
+                </tbody></table>
+            </div>`;
+        }
+
+        function livePortfolioTable(live) {
+            const pf = live.portfolio || {};
+            const m = live.metrics;
+            const nOpen = pf.n_open || live.n_open || 0;
+            const nPriced = pf.n_priced || 0;
+            const nWin = pf.n_win || 0;
+            const deployed = pf.total_deployed || 0;
+            const unrealized = pf.total_unrealized_pnl || 0;
+            const retOnDeployed = pf.return_on_deployed || 0;
+            const daysActive = pf.days_active || 0;
+            const nClosed = live.n_trades || 0;
+            const finalEq = live.final_equity || 0;
+            const snapDate = pf.snap_date || '-';
+            const winRate = nPriced > 0 ? (nWin / nPriced * 100) : 0;
+            const unrealClass = unrealized >= 0 ? 'cell-pos' : 'cell-neg';
+
+            return `<div class="table-wrapper">
+                <div class="table-header"><span class="table-title">Live (Out-of-Sample)</span></div>
+                <table class="kelly-table"><tbody>
+                    <tr><td>Positions</td><td>${nOpen} open${nClosed > 0 ? ', ' + nClosed + ' closed' : ''}</td></tr>
+                    <tr><td>Deployed</td><td>${fmt.usd(deployed)}</td></tr>
+                    <tr><td>Unrealized P&L</td><td class="${unrealClass}">${nPriced > 0 ? fmt.pnl(unrealized) : '-'}</td></tr>
+                    <tr><td>Return</td><td class="${unrealClass}">${nPriced > 0 ? (retOnDeployed * 100).toFixed(2) + '%' : '-'}</td></tr>
+                    <tr><td>Win Rate</td><td>${nPriced > 0 ? winRate.toFixed(0) + '% (' + nWin + '/' + nPriced + ')' : '-'}</td></tr>
+                    ${m && m.max_dd < 0 ? `<tr><td>Max Drawdown</td><td class="cell-neg">${(m.max_dd * 100).toFixed(1)}%</td></tr>` : ''}
+                    ${nClosed > 0 && m ? `<tr><td>Realized P&L</td><td class="${m.total_pnl >= 0 ? 'cell-pos' : 'cell-neg'}">${fmt.pnl(m.total_pnl)}</td></tr>` : ''}
+                    <tr><td>Final Equity</td><td style="color:var(--accent);font-size:16px">${fmt.usd(finalEq)}</td></tr>
+                    <tr><td style="color:var(--text-muted)">Since</td><td style="color:var(--text-muted)">${pf.first_entry || '-'} (${daysActive}d)</td></tr>
+                </tbody></table>
+            </div>`;
+        }
 
         let html = `
         <div class="section-header">
-            <h2 class="section-title">Kelly Criterion & Capital Allocation</h2>
-        </div>
-
-        <div class="kelly-grid">
-            <div class="table-wrapper">
-                <div class="table-header"><span class="table-title">Kelly Parameters</span></div>
-                <table class="kelly-table"><tbody>
-                    <tr><td>Backtest trades</td><td>${data.bt_trades}</td></tr>
-                    <tr><td>Live trades</td><td>${data.live_trades}</td></tr>
-                    <tr><td>Total trades</td><td style="color:var(--accent)">${data.n_trades}</td></tr>
-                    <tr><td>Mean return (mu)</td><td>${(data.mu * 100).toFixed(2)}%</td></tr>
-                    <tr><td>Std dev</td><td>${(data.std * 100).toFixed(2)}%</td></tr>
-                    <tr><td>Variance</td><td>${data.var.toFixed(4)}</td></tr>
-                    <tr><td>Full Kelly f*</td><td>${(data.kelly_full * 100).toFixed(2)}%</td></tr>
-                    <tr><td>Half Kelly f/2</td><td style="color:var(--accent);font-size:18px">${(data.kelly_f * 100).toFixed(2)}%</td></tr>
-                </tbody></table>
+            <h2 class="section-title">Track Record</h2>
+            <div class="btn-group">
+                <button class="btn" onclick="loadTrackRecord()">Refresh</button>
             </div>
-
-            <div class="table-wrapper">
-                <div class="table-header"><span class="table-title">Capital Allocation</span></div>
-                <table class="kelly-table"><tbody>
-                    <tr><td>Account value</td><td>${fmt.usd(data.account_value)}</td></tr>
-                    <tr><td>Kelly target (spreads)</td><td style="color:var(--accent)">${fmt.usd(data.kelly_target)}</td></tr>
-                    <tr><td>Alloc per position</td><td>${fmt.usd(data.alloc_per_pos)}</td></tr>
-                    <tr><td>Cash reserve</td><td style="color:var(--green)">${fmt.usd(data.cash_reserve)}</td></tr>
-                    <tr><td>Risk-free rate</td><td>${(data.rf_rate * 100).toFixed(1)}%</td></tr>
-                    <tr><td>RF income / year</td><td style="color:var(--green)">${fmt.usd(data.rf_income)}/yr</td></tr>
-                </tbody></table>
-            </div>
-        </div>
-
-        <div class="alloc-bar">
-            <div class="alloc-segment alloc-spreads" style="width: ${spreadPct}%">Spreads ${spreadPct}%</div>
-            <div class="alloc-segment alloc-cash" style="width: ${cashPct}%">Cash @ ${(data.rf_rate*100).toFixed(1)}% = ${cashPct}%</div>
-        </div>
-
-        <div class="table-wrapper" style="margin-top: 24px;">
-            <div class="table-header"><span class="table-title">Projected Annual Returns</span></div>
-            <table>
-                <thead><tr><th>Source</th><th>Allocation</th><th>Rate</th><th>Contribution</th><th>$ Amount</th></tr></thead>
-                <tbody>
-                    <tr>
-                        <td>Calendar Spreads</td>
-                        <td>${spreadPct}%</td>
-                        <td class="cell-pos">${(data.spread_cagr * 100).toFixed(1)}%</td>
-                        <td class="cell-pos">${(data.spread_cagr * 100).toFixed(1)}%</td>
-                        <td class="cell-pos">${fmt.usd(data.spread_cagr * data.account_value)}</td>
-                    </tr>
-                    <tr>
-                        <td>Risk-Free (T-Bills)</td>
-                        <td>${cashPct}%</td>
-                        <td>${(data.rf_rate * 100).toFixed(1)}%</td>
-                        <td>${(data.rf_rate * (1 - data.kelly_f) * 100).toFixed(1)}%</td>
-                        <td>${fmt.usd(data.rf_income)}</td>
-                    </tr>
-                    <tr style="font-weight:700;font-size:14px">
-                        <td>Combined</td>
-                        <td>100%</td>
-                        <td></td>
-                        <td class="cell-pos">${(data.combined_cagr * 100).toFixed(1)}%</td>
-                        <td class="cell-pos">${fmt.usd(data.combined_cagr * data.account_value)}</td>
-                    </tr>
-                </tbody>
-            </table>
         </div>`;
 
-        container.innerHTML = html;
-    } catch (e) {
-        container.innerHTML = `<div class="loading">Error: ${e.message}</div>`;
-    }
-}
-
-// ── Risk & Analytics Tab ──
-async function loadRisk() {
-    const container = document.getElementById('risk-content');
-    container.innerHTML = '<div class="loading"><div class="spinner"></div> Computing risk analytics...</div>';
-
-    try {
-        const data = await api(`/api/risk?account_value=${state.accountValue}`);
-
-        if (data.error) {
-            container.innerHTML = `<div class="loading">${data.error} (${data.n_trades} trades)</div>`;
-            return;
+        // Equity curve chart
+        if (data.chart) {
+            html += `<div class="table-wrapper" style="padding: 12px; margin-bottom: 24px;">
+                <img src="${data.chart}?t=${Date.now()}" style="width: 100%;" alt="Equity Curve">
+            </div>`;
         }
 
-        const mc = data.monte_carlo;
-        const risk = data.risk_metrics;
-        const edge = data.edge;
-        const dist = data.distribution;
+        // Metrics tables side by side
+        const btMetrics = data.backtest ? data.backtest.metrics : null;
 
-        let html = `
-        <div class="section-header">
-            <h2 class="section-title">Risk & Analytics</h2>
-            <div class="btn-group">
-                <button class="btn" onclick="loadRisk()">Refresh</button>
-            </div>
-        </div>
-
-        <!-- KPI Cards -->
-        <div class="metrics-row">
-            <div class="metric-card risk-kpi-green">
-                <div class="metric-label">Prob(Profit)</div>
-                <div class="metric-value green">${(mc.prob_profit * 100).toFixed(1)}%</div>
-                <div class="metric-sub">${mc.n_sims.toLocaleString()} MC sims, ${mc.n_trades} trades</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Median CAGR</div>
-                <div class="metric-value accent">${(mc.median_cagr * 100).toFixed(1)}%</div>
-                <div class="metric-sub">5th: ${(mc.p5_cagr * 100).toFixed(1)}% | 95th: ${(mc.p95_cagr * 100).toFixed(1)}%</div>
-            </div>
-            <div class="metric-card risk-kpi-red">
-                <div class="metric-label">VaR 95% (portfolio)</div>
-                <div class="metric-value red">${(risk.var_95_portfolio * 100).toFixed(2)}%</div>
-                <div class="metric-sub">${fmt.usd(risk.var_95_dollar)} per position (${(risk.var_95 * 100).toFixed(0)}% of cost)</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Max DD (median)</div>
-                <div class="metric-value red">${(mc.max_dd_median * 100).toFixed(1)}%</div>
-                <div class="metric-sub">5th: ${(mc.max_dd_p5 * 100).toFixed(1)}% | 95th: ${(mc.max_dd_p95 * 100).toFixed(1)}%</div>
-            </div>
-            <div class="metric-card ${edge.permutation_pvalue < 0.05 ? 'risk-kpi-green' : 'risk-kpi-red'}">
-                <div class="metric-label">Edge p-value</div>
-                <div class="metric-value ${edge.permutation_pvalue < 0.05 ? 'green' : 'red'}">${edge.permutation_pvalue.toFixed(4)}</div>
-                <div class="metric-sub">${edge.permutation_pvalue < 0.05 ? 'Significant' : 'Not significant'} (permutation test)</div>
-            </div>
-        </div>
-
-        <!-- Charts: 2x2 grid -->
-        <div class="risk-charts-grid">`;
-
-        if (data.charts) {
-            for (const chart of data.charts) {
-                const title = chart.includes('fan') ? 'Monte Carlo Fan Chart' :
-                              chart.includes('terminal') ? 'Terminal Wealth Distribution' :
-                              chart.includes('edge') ? 'Edge Persistence' : 'Return Distribution';
-                html += `<div class="table-wrapper" style="padding: 12px;">
-                    <div class="table-header"><span class="table-title">${title}</span></div>
-                    <img src="${chart}?t=${Date.now()}" style="width: 100%; border-radius: 6px; margin-top: 8px;" alt="${title}">
-                </div>`;
-            }
+        // For live: use portfolio table if open positions exist, standard metrics otherwise
+        let liveHtml;
+        if (data.live && (data.live.n_open > 0 || (data.live.portfolio && data.live.portfolio.n_open > 0))) {
+            liveHtml = livePortfolioTable(data.live);
+        } else {
+            const liveMetrics = data.live ? data.live.metrics : null;
+            liveHtml = metricsTable('Live (Out-of-Sample)', liveMetrics);
         }
 
-        html += `</div>
-
-        <!-- Risk Metrics Table -->
-        <div class="kelly-grid">
-            <div class="table-wrapper">
-                <div class="table-header"><span class="table-title">Value at Risk</span></div>
-                <table class="kelly-table"><tbody>
-                    <tr><td>Position allocation</td><td>${fmt.usd(risk.pos_alloc)}</td></tr>
-                    <tr><td>VaR 95% (trade)</td><td class="cell-neg">${(risk.var_95 * 100).toFixed(1)}%</td></tr>
-                    <tr><td>VaR 99% (trade)</td><td class="cell-neg">${(risk.var_99 * 100).toFixed(1)}%</td></tr>
-                    <tr><td>VaR 95% (portfolio)</td><td class="cell-neg">${(risk.var_95_portfolio * 100).toFixed(3)}%</td></tr>
-                    <tr><td>VaR 99% (portfolio)</td><td class="cell-neg">${(risk.var_99_portfolio * 100).toFixed(3)}%</td></tr>
-                    <tr><td>CVaR 95% ($ per position)</td><td class="cell-neg">${fmt.usd(risk.cvar_95_dollar)}</td></tr>
-                    <tr><td>CVaR 99% ($ per position)</td><td class="cell-neg">${fmt.usd(risk.cvar_99_dollar)}</td></tr>
-                    <tr><td>Worst trade</td><td class="cell-neg">${(risk.worst_trade * 100).toFixed(1)}%</td></tr>
-                    <tr><td>Best trade</td><td class="cell-pos">${(risk.best_trade * 100).toFixed(1)}%</td></tr>
-                </tbody></table>
-            </div>
-
-            <div class="table-wrapper">
-                <div class="table-header"><span class="table-title">Monte Carlo Summary</span></div>
-                <table class="kelly-table"><tbody>
-                    <tr><td>Prob(Profit)</td><td class="cell-pos">${(mc.prob_profit * 100).toFixed(1)}%</td></tr>
-                    <tr><td>Prob(2x)</td><td class="cell-pos">${(mc.prob_double * 100).toFixed(1)}%</td></tr>
-                    <tr><td>Prob(>20% loss)</td><td class="cell-neg">${(mc.prob_loss_20 * 100).toFixed(1)}%</td></tr>
-                    <tr><td>Median terminal</td><td>${fmt.usd(mc.terminal_median)}</td></tr>
-                    <tr><td>5th pctl terminal</td><td class="cell-neg">${fmt.usd(mc.terminal_p5)}</td></tr>
-                    <tr><td>95th pctl terminal</td><td class="cell-pos">${fmt.usd(mc.terminal_p95)}</td></tr>
-                    <tr><td>Median CAGR</td><td class="cell-pos">${(mc.median_cagr * 100).toFixed(1)}%</td></tr>
-                    <tr><td>Max DD (median)</td><td class="cell-neg">${(mc.max_dd_median * 100).toFixed(1)}%</td></tr>
-                </tbody></table>
-            </div>
-        </div>
-
-        <!-- Distribution Stats -->
-        <div class="kelly-grid">
-            <div class="table-wrapper">
-                <div class="table-header"><span class="table-title">Distribution</span></div>
-                <table class="kelly-table"><tbody>
-                    <tr><td>Mean return</td><td class="cell-pos">${(dist.mean * 100).toFixed(2)}%</td></tr>
-                    <tr><td>Std dev</td><td>${(dist.std * 100).toFixed(2)}%</td></tr>
-                    <tr><td>Skewness</td><td>${dist.skewness.toFixed(3)}</td></tr>
-                    <tr><td>Excess kurtosis</td><td>${dist.kurtosis.toFixed(3)}</td></tr>
-                    <tr><td>Jarque-Bera stat</td><td>${dist.jarque_bera.toFixed(1)}</td></tr>
-                    <tr><td>JB p-value</td><td>${dist.jb_pvalue < 0.05 ? '<span class="cell-neg">'+dist.jb_pvalue.toFixed(4)+'</span> (non-normal)' : '<span class="cell-pos">'+dist.jb_pvalue.toFixed(4)+'</span> (normal)'}</td></tr>
-                    <tr><td>Win rate</td><td>${(dist.win_rate * 100).toFixed(1)}%</td></tr>
-                    <tr><td>N trades</td><td>${dist.n_trades}</td></tr>
-                </tbody></table>
-            </div>
-
-            <div class="table-wrapper">
-                <div class="table-header"><span class="table-title">Edge Persistence</span></div>
-                <table class="kelly-table"><tbody>
-                    <tr><td>Current Half Kelly f</td><td style="color:var(--accent)">${(edge.current_kelly * 100).toFixed(2)}%</td></tr>
-                    <tr><td>Current Sharpe (${edge.window}-trade)</td><td>${edge.current_sharpe.toFixed(2)}</td></tr>
-                    <tr><td>Current Win Rate (${edge.window}-trade)</td><td>${(edge.current_winrate * 100).toFixed(1)}%</td></tr>
-                    <tr><td>Observed mean return</td><td class="cell-pos">${(edge.observed_mean * 100).toFixed(3)}%</td></tr>
-                    <tr><td>Permutation p-value</td><td class="${edge.permutation_pvalue < 0.05 ? 'cell-pos' : 'cell-neg'}">${edge.permutation_pvalue.toFixed(4)}</td></tr>
-                    <tr><td>Edge significant?</td><td class="${edge.permutation_pvalue < 0.05 ? 'cell-pos' : 'cell-neg'}">${edge.permutation_pvalue < 0.05 ? 'YES' : 'NO'}</td></tr>
-                </tbody></table>
-            </div>
-        </div>
-
-        <!-- Return Percentiles -->
-        <div class="table-wrapper">
-            <div class="table-header"><span class="table-title">Return Percentiles (per trade)</span></div>
-            <table>
-                <thead><tr>
-                    ${Object.keys(dist.percentiles).map(p => '<th>P' + p + '</th>').join('')}
-                </tr></thead>
-                <tbody><tr>
-                    ${Object.values(dist.percentiles).map(v => {
-                        const cls = v >= 0 ? 'cell-pos' : 'cell-neg';
-                        return '<td class="' + cls + '">' + (v * 100).toFixed(1) + '%</td>';
-                    }).join('')}
-                </tr></tbody>
-            </table>
+        html += `<div class="kelly-grid">
+            ${metricsTable('Backtest (In-Sample)', btMetrics)}
+            ${liveHtml}
         </div>`;
 
         container.innerHTML = html;
@@ -843,12 +868,12 @@ async function showOrderConfirm() {
         const [h, m] = etStr.split(':').map(Number);
         const etMins = h * 60 + m;
         if (etMins < 660 || etMins > 870) { // before 11:00 or after 14:30
-            timeWarning = `<div style="background:rgba(248,81,73,0.1);border:1px solid #f85149;border-radius:6px;padding:12px;margin-bottom:12px;">
+            timeWarning = `<div style="background:rgba(248,81,73,0.1);border:1px solid #f85149;padding:12px;margin-bottom:12px;">
                 <strong style="color:#f85149;">Outside optimal window (11:00-14:30 ET)</strong><br>
                 <span style="font-size:12px;">Spreads may be wider. Consider waiting for better fills.</span>
             </div>`;
         } else {
-            timeWarning = `<div style="background:rgba(63,185,80,0.1);border:1px solid #3fb950;border-radius:6px;padding:12px;margin-bottom:12px;">
+            timeWarning = `<div style="background:rgba(63,185,80,0.1);border:1px solid #3fb950;padding:12px;margin-bottom:12px;">
                 <strong style="color:#3fb950;">Within optimal window</strong>
                 <span style="font-size:12px;"> — best bid-ask spreads (11:00-14:30 ET)</span>
             </div>`;
@@ -861,7 +886,7 @@ async function showOrderConfirm() {
         <p><strong>${sizing.n_positions}</strong> positions to place</p>
         <p>Total deployment: <strong>${fmt.usd(sizing.total_deployed)}</strong></p>
         <p>Kelly target: ${fmt.usd(sizing.kelly_target)} (f = ${(sizing.kelly_f * 100).toFixed(2)}%)</p>
-        <div style="margin-top:12px; padding:10px; background:var(--bg-secondary); border-radius:6px; font-size:12px; color:var(--text-muted);">
+        <div style="margin-top:12px; padding:10px; background:var(--bg-secondary);  font-size:12px; color:var(--text-muted);">
             <strong>Execution strategy:</strong><br>
             1. Combo order LMT at mid (5 min timeout, walk $0.05/30s)<br>
             2. If combo fails: individual legs LMT + walk (2 min/leg)<br>
@@ -935,6 +960,177 @@ async function scanAndEnter() {
     }
 }
 
+function showAddModal(idx) {
+    const s = _signalsList[idx];
+    if (!s) return;
+    _pendingSignal = s;
+
+    const costPerContract = s.dbl_cost * 100;  // per share -> per contract (x100)
+    const commPerContract = 4 * 0.65;  // 4 legs x $0.65
+    const totalPerContract = costPerContract + commPerContract;
+
+    document.getElementById('add-position-body').innerHTML = `
+        <div style="margin-bottom:12px;">
+            <strong style="font-size:16px;color:var(--text-primary)">${s.ticker}</strong>
+            <span style="margin-left:8px;color:var(--accent)">${s.combo}</span>
+        </div>
+        <table style="width:100%;font-size:13px;margin-bottom:12px;">
+            <tr><td>Call Strike</td><td style="text-align:right">${fmt.usd(s.strike)}</td></tr>
+            <tr><td>Put Strike</td><td style="text-align:right">${s.put_strike ? fmt.usd(s.put_strike) : '-'}</td></tr>
+            <tr><td>Stock</td><td style="text-align:right">${fmt.usd2(s.stock_px)}</td></tr>
+            <tr><td>Front Exp</td><td style="text-align:right">${s.front_exp}</td></tr>
+            <tr><td>Back Exp</td><td style="text-align:right">${s.back_exp}</td></tr>
+            <tr><td>FF</td><td style="text-align:right;color:var(--accent)">${fmt.pct(s.ff)}</td></tr>
+            <tr><td>BA%</td><td style="text-align:right">${s.ba_pct != null ? (s.ba_pct * 100).toFixed(1) + '%' : '-'}</td></tr>
+            <tr style="border-top:1px solid var(--border)">
+                <td>Cost / share</td><td style="text-align:right">${fmt.usd2(s.dbl_cost)}</td></tr>
+            <tr><td>Cost / contract</td><td style="text-align:right;font-weight:700">${fmt.usd(totalPerContract)}</td></tr>
+        </table>
+        <div style="background:var(--bg-secondary);padding:10px;font-size:12px;">
+            <strong>Kelly recommends: ${s.contracts} contract${s.contracts > 1 ? 's' : ''}</strong>
+            (${fmt.usd(s.deployed)} deployed)
+        </div>
+    `;
+
+    document.getElementById('add-pos-contracts').value = s.contracts || 1;
+    document.getElementById('add-position-modal').classList.add('show');
+}
+
+async function confirmAddPosition() {
+    if (!_pendingSignal) return;
+    const s = _pendingSignal;
+    const contracts = parseInt(document.getElementById('add-pos-contracts').value) || 1;
+
+    const confirmBtn = document.getElementById('add-pos-confirm');
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'Adding...';
+
+    const body = {
+        ticker: s.ticker,
+        combo: s.combo,
+        strike: s.strike,
+        put_strike: s.put_strike || null,
+        front_exp: s.front_exp,
+        back_exp: s.back_exp,
+        contracts: contracts,
+        cost_per_share: s.dbl_cost,
+        ff: s.ff,
+        spread_type: 'double',
+        n_legs: 4,
+    };
+
+    try {
+        await api('/api/portfolio/add', {
+            method: 'POST',
+            body: JSON.stringify(body),
+        });
+        closeModal('add-position-modal');
+        // Replace button with "IN" label
+        const btn = document.getElementById('add-' + s.ticker);
+        if (btn) {
+            btn.outerHTML = `<span style="color:var(--green);font-size:11px;font-weight:700;">IN</span>`;
+        }
+        _pendingSignal = null;
+        await refreshStatus();
+    } catch (e) {
+        alert('Error: ' + e.message);
+    } finally {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = 'Add';
+    }
+}
+
+async function autoManage() {
+    const btn = document.getElementById('btn-manage');
+    if (!btn) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-spinner"></span> Managing...';
+
+    // Disable other buttons during auto-manage
+    const scanBtn = document.getElementById('btn-scan');
+    const placeBtn = document.getElementById('btn-place');
+    const scanEnterBtn = document.getElementById('btn-scan-enter');
+    if (scanBtn) scanBtn.disabled = true;
+    if (placeBtn) placeBtn.disabled = true;
+    if (scanEnterBtn) scanEnterBtn.disabled = true;
+
+    try {
+        await api('/api/auto_manage', {
+            method: 'POST',
+            body: JSON.stringify({ account_value: state.accountValue }),
+        });
+
+        // Poll for completion via scanner_status + auto_manage_result
+        const pollTimer = setInterval(async () => {
+            try {
+                const status = await api('/api/scanner_status');
+                if (!status.running) {
+                    // Check auto_manage result
+                    const mgr = await api('/api/auto_manage_result');
+                    if (!mgr.running && mgr.result) {
+                        clearInterval(pollTimer);
+                        btn.disabled = false;
+                        btn.textContent = 'Auto-Manage';
+                        if (scanBtn) scanBtn.disabled = false;
+                        if (placeBtn) placeBtn.disabled = false;
+                        if (scanEnterBtn) scanEnterBtn.disabled = false;
+
+                        // Show summary
+                        const r = mgr.result;
+                        const parts = [];
+                        if (r.removed && r.removed.length > 0) parts.push(`Removed ${r.removed.length} expired: ${r.removed.join(', ')}`);
+                        if (r.added && r.added.length > 0) parts.push(`Added ${r.added.length}: ${r.added.map(a => a.ticker).join(', ')}`);
+                        if (r.filtered_ba && r.filtered_ba.length > 0) parts.push(`BA% filtered: ${r.filtered_ba.length}`);
+                        if (r.errors && r.errors.length > 0) parts.push(`Errors: ${r.errors.join('; ')}`);
+                        if (parts.length === 0) parts.push(`Scan complete: ${r.n_signals} signals, no changes needed`);
+
+                        showToast(parts.join('\n'));
+
+                        // Refresh tabs
+                        loadSignals();
+                        await refreshStatus();
+                    }
+                }
+            } catch (e) {
+                clearInterval(pollTimer);
+                btn.disabled = false;
+                btn.textContent = 'Auto-Manage';
+                if (scanBtn) scanBtn.disabled = false;
+                if (placeBtn) placeBtn.disabled = false;
+                if (scanEnterBtn) scanEnterBtn.disabled = false;
+            }
+        }, 5000);
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Auto-Manage';
+        if (scanBtn) scanBtn.disabled = false;
+        if (placeBtn) placeBtn.disabled = false;
+        if (scanEnterBtn) scanEnterBtn.disabled = false;
+        alert('Auto-Manage error: ' + e.message);
+    }
+}
+
+function showToast(message) {
+    // Remove existing toast if any
+    const existing = document.getElementById('manage-toast');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.id = 'manage-toast';
+    toast.style.cssText = `
+        position: fixed; top: 12px; right: 12px; z-index: 10000;
+        background: #0a0a0a; border: 1px solid #ff8c00;
+        padding: 10px 14px; max-width: 420px;
+        font-size: 11px; font-family: Consolas, 'Courier New', monospace;
+        color: #d4d4d4; white-space: pre-line;
+    `;
+    toast.innerHTML = `<div style="font-weight:700;margin-bottom:4px;color:#ff8c00;">AUTO-MANAGE COMPLETE</div>${message}`;
+    document.body.appendChild(toast);
+
+    setTimeout(() => toast.remove(), 10000);
+}
+
 async function closeExpiring() {
     if (!state.connected) return alert('Connect to IBKR first');
     if (!confirm('Close all expiring positions?')) return;
@@ -968,6 +1164,365 @@ async function cancelAllOrders() {
         alert('Cancel error: ' + e.message);
     }
 }
+
+// ── Monitor Tab ──
+let simPollTimer = null;
+let refreshPollTimer = null;
+
+async function loadMonitor() {
+    const container = document.getElementById('monitor-content');
+    container.innerHTML = '<div class="loading"><div class="spinner"></div> Loading monitor...</div>';
+
+    // Load portfolio positions + cached prices
+    let monitorData = null;
+    try {
+        monitorData = await api('/api/monitor');
+    } catch (e) {
+        container.innerHTML = `<div class="loading">Error loading monitor: ${e.message}</div>`;
+        return;
+    }
+
+    // Check if there's a previous simulation result
+    let simData = null;
+    try {
+        const simStatus = await api('/api/monitor/simulate/status');
+        if (simStatus.status === 'done' && simStatus.result) {
+            simData = simStatus.result;
+        }
+    } catch (e) {}
+
+    const active = monitorData.active || [];
+    const cached = monitorData.cached_prices || {};
+    const cachedDate = monitorData.cached_date;
+
+    // Build the page
+    let html = `
+    <div class="section-header">
+        <h2 class="section-title">P&L Monitor</h2>
+        <div class="btn-group">
+            <button class="btn" onclick="refreshMonitorPrices()" id="btn-monitor-refresh"
+                ${monitorData.refresh_running ? 'disabled' : ''}>
+                ${monitorData.refresh_running ? '<span class="btn-spinner"></span> Pricing...' : 'Refresh Prices (ThetaData)'}
+            </button>
+            <button class="btn btn-primary" onclick="runSimulation()" id="btn-simulate">
+                Run Simulation
+            </button>
+        </div>
+    </div>`;
+
+    // ── Live Portfolio Section ──
+    // Merge portfolio positions with cached prices
+    let livePnl = 0;
+    let nPriced = 0;
+    let nWin = 0;
+    let totalDeployed = 0;
+
+    const merged = active.map(p => {
+        const c = cached[p.ticker];
+        const entry = p.cost_per_share || 0;
+        const contracts = p.contracts || 0;
+        totalDeployed += p.total_deployed || 0;
+
+        if (c) {
+            nPriced++;
+            livePnl += c.unrealized_pnl || 0;
+            if ((c.unrealized_pnl || 0) > 0) nWin++;
+            return { ...p, ...c, has_price: true };
+        }
+        return { ...p, has_price: false };
+    });
+
+    const liveWinRate = nPriced > 0 ? (nWin / nPriced * 100) : 0;
+
+    html += `
+    <div class="metrics-row">
+        <div class="metric-card ${livePnl >= 0 ? 'risk-kpi-green' : 'risk-kpi-red'}">
+            <div class="metric-label">Live P&L</div>
+            <div class="metric-value ${livePnl >= 0 ? 'green' : 'red'}">${nPriced > 0 ? fmt.pnl(livePnl) : '-'}</div>
+            <div class="metric-sub">${cachedDate ? 'ThetaData ' + cachedDate : 'Click Refresh Prices'}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Active Positions</div>
+            <div class="metric-value">${active.length}/20</div>
+            <div class="metric-sub">${nPriced > 0 ? nPriced + ' priced / ' + nWin + ' win' : '-'}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Win Rate</div>
+            <div class="metric-value accent">${nPriced > 0 ? liveWinRate.toFixed(0) + '%' : '-'}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Capital Deployed</div>
+            <div class="metric-value">${totalDeployed > 0 ? fmt.usd(totalDeployed) : '-'}</div>
+            <div class="metric-sub">${totalDeployed > 0 && livePnl !== 0 ? 'Return: ' + (livePnl / totalDeployed * 100).toFixed(2) + '%' : ''}</div>
+        </div>
+    </div>`;
+
+    // Live positions table
+    if (active.length > 0) {
+        html += `<div class="table-wrapper">
+        <div class="table-header">
+            <span class="table-title">Live Portfolio (${active.length} positions)</span>
+            ${cachedDate ? '<span style="font-size:12px;color:var(--text-muted)">Prices: ' + cachedDate + '</span>' : ''}
+        </div>
+        <table><thead><tr>
+            <th>Ticker</th><th>Combo</th><th>Strike</th><th>Cts</th><th>Entry</th>
+            <th>Current</th><th>P&L</th><th>Ret%</th><th>DTE</th><th>FF%</th>
+            <th>Stock</th><th>Entry Date</th>
+        </tr></thead><tbody>`;
+
+        const sorted = [...merged].sort((a, b) => {
+            if (a.has_price && b.has_price) return (b.unrealized_pnl || 0) - (a.unrealized_pnl || 0);
+            if (a.has_price) return -1;
+            if (b.has_price) return 1;
+            return 0;
+        });
+
+        for (const p of sorted) {
+            const dte = p.days_to_exp != null ? p.days_to_exp + 'd' : '-';
+            const dteClass = p.days_to_exp != null && p.days_to_exp <= 5 ? 'cell-neg' : p.days_to_exp != null && p.days_to_exp <= 14 ? 'cell-ff' : '';
+            const ffStr = p.ff != null ? (p.ff >= 1 ? p.ff.toFixed(0) : (p.ff * 100).toFixed(1)) + '%' : '-';
+            const putK = p.put_strike && p.put_strike !== p.strike ? '/' + Number(p.put_strike).toFixed(0) : '';
+
+            if (p.has_price) {
+                const pnlClass = (p.unrealized_pnl || 0) >= 0 ? 'cell-pos' : 'cell-neg';
+                const retPct = p.return_pct != null ? (p.return_pct * 100).toFixed(1) + '%' : '-';
+                html += `<tr>
+                    <td class="cell-ticker">${p.ticker}</td>
+                    <td>${p.combo || '-'}</td>
+                    <td>${Number(p.strike).toFixed(0)}${putK}</td>
+                    <td>${p.contracts}</td>
+                    <td>${fmt.usd2(p.entry_cost || p.cost_per_share)}</td>
+                    <td>${fmt.usd2(p.current_cost)}</td>
+                    <td class="${pnlClass}">${fmt.pnl(p.unrealized_pnl)}</td>
+                    <td class="${pnlClass}">${retPct}</td>
+                    <td class="${dteClass}">${dte}</td>
+                    <td class="cell-ff">${ffStr}</td>
+                    <td>${fmt.usd2(p.stock_px)}</td>
+                    <td>${p.entry_date || '-'}</td>
+                </tr>`;
+            } else {
+                html += `<tr>
+                    <td class="cell-ticker">${p.ticker}</td>
+                    <td>${p.combo || '-'}</td>
+                    <td>${Number(p.strike).toFixed(0)}${putK}</td>
+                    <td>${p.contracts}</td>
+                    <td>${fmt.usd2(p.cost_per_share)}</td>
+                    <td style="color:var(--text-muted)">--</td>
+                    <td style="color:var(--text-muted)">--</td>
+                    <td style="color:var(--text-muted)">--</td>
+                    <td class="${dteClass}">${dte}</td>
+                    <td class="cell-ff">${ffStr}</td>
+                    <td style="color:var(--text-muted)">--</td>
+                    <td>${p.entry_date || '-'}</td>
+                </tr>`;
+            }
+        }
+
+        // Total row
+        if (nPriced > 0) {
+            const pnlClass = livePnl >= 0 ? 'cell-pos' : 'cell-neg';
+            html += `<tr style="font-weight:700;background:var(--bg-secondary)">
+                <td>TOTAL</td><td></td><td></td><td></td><td></td><td></td>
+                <td class="${pnlClass}">${fmt.pnl(livePnl)}</td>
+                <td></td><td></td><td></td><td></td><td></td>
+            </tr>`;
+        }
+
+        html += '</tbody></table></div>';
+    } else {
+        html += `<div class="table-wrapper"><div style="padding: 40px; text-align: center; color: var(--text-secondary);">
+            No active positions in portfolio. Place orders from the Signals tab.
+        </div></div>`;
+    }
+
+    // ── Simulation Section ──
+    if (simData && simData.positions && simData.positions.length > 0) {
+        html += `<div class="table-wrapper" style="margin-top: 24px;">
+        <div class="table-header">
+            <span class="table-title">Simulation (${simData.n_priced} positions from signals)</span>
+            <span style="font-size:12px;color:var(--text-muted)">
+                P&L: <span class="${simData.total_unrealized_pnl >= 0 ? 'cell-pos' : 'cell-neg'}">${fmt.pnl(simData.total_unrealized_pnl)}</span>
+                &nbsp;|&nbsp; WR: ${simData.win_rate}%
+                &nbsp;|&nbsp; Invested: ${fmt.usd(simData.total_invested)}
+            </span>
+        </div>
+        <table><thead><tr>
+            <th>Ticker</th><th>Combo</th><th>Cts</th><th>Entry</th><th>Current</th>
+            <th>P&L</th><th>Ret%</th><th>DTE</th><th>Stock</th>
+            <th>Entry Date</th><th>FF%</th><th>Stk Entry</th>
+        </tr></thead><tbody>`;
+
+        const simSorted = [...simData.positions].sort((a, b) => (b.unrealized_pnl || 0) - (a.unrealized_pnl || 0));
+        for (const p of simSorted) {
+            const pnlClass = (p.unrealized_pnl || 0) >= 0 ? 'cell-pos' : 'cell-neg';
+            const dteStr = p.front_dte >= 0 ? p.front_dte + 'd' : 'exp';
+            const retPct = p.return_pct != null ? (p.return_pct * 100).toFixed(1) + '%' : '-';
+            const ffStr = p.ff != null ? (p.ff < 1 ? (p.ff * 100).toFixed(1) : p.ff.toFixed(0)) + '%' : '-';
+
+            html += `<tr>
+                <td class="cell-ticker">${p.ticker}</td>
+                <td>${p.combo || '-'}</td>
+                <td>${p.contracts}</td>
+                <td>${fmt.usd2(p.entry_cost)}</td>
+                <td>${fmt.usd2(p.current_cost)}</td>
+                <td class="${pnlClass}">${fmt.pnl(p.unrealized_pnl)}</td>
+                <td class="${pnlClass}">${retPct}</td>
+                <td>${dteStr}</td>
+                <td>${fmt.usd2(p.stock_px || p.stock_px_now)}</td>
+                <td>${p.entry_date || '-'}</td>
+                <td class="cell-ff">${ffStr}</td>
+                <td>${p.stock_px_entry ? fmt.usd2(p.stock_px_entry) : '-'}</td>
+            </tr>`;
+        }
+
+        const simTotal = simData.positions.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
+        const simTotalClass = simTotal >= 0 ? 'cell-pos' : 'cell-neg';
+        html += `<tr style="font-weight:700;background:var(--bg-secondary)">
+            <td>TOTAL</td><td></td><td></td><td></td><td></td>
+            <td class="${simTotalClass}">${fmt.pnl(simTotal)}</td>
+            <td></td><td></td><td></td><td></td><td></td><td></td>
+        </tr>`;
+
+        html += '</tbody></table></div>';
+
+        if (simData.errors && simData.errors.length > 0) {
+            html += `<div style="padding: 4px 16px; color: var(--text-muted); font-size: 12px;">
+                Failed to price: ${simData.errors.join(', ')}
+            </div>`;
+        }
+    }
+
+    // ── History Section ──
+    try {
+        const history = await api('/api/monitor/history');
+        if (history.count > 0) {
+            html += `<div class="table-wrapper" style="margin-top: 24px;">
+            <div class="table-header"><span class="table-title">Snapshot History (${history.count})</span></div>
+            <table><thead><tr>
+                <th>Date</th><th>Type</th><th>Positions</th><th>Total P&L</th><th>File</th>
+            </tr></thead><tbody>`;
+
+            for (const s of history.snapshots.slice(0, 20)) {
+                const pnlClass = (s.total_unrealized_pnl || 0) >= 0 ? 'cell-pos' : 'cell-neg';
+                const nPos = (s.positions || []).length;
+                const typeLabel = s.is_sim ? 'SIM' : 'LIVE';
+                const typeClass = s.is_sim ? 'accent' : 'green';
+                html += `<tr>
+                    <td>${s.date || '-'}</td>
+                    <td style="color:var(--${typeClass});font-weight:700">${typeLabel}</td>
+                    <td>${nPos}</td>
+                    <td class="${pnlClass}">${fmt.pnl(s.total_unrealized_pnl)}</td>
+                    <td style="color:var(--text-muted);font-size:11px">${s.file || '-'}</td>
+                </tr>`;
+            }
+            html += '</tbody></table></div>';
+        }
+    } catch (e) {}
+
+    container.innerHTML = html;
+
+    // Badge = number of active positions
+    const badge = document.getElementById('badge-monitor');
+    if (badge) badge.textContent = active.length > 0 ? active.length : '';
+
+    // If refresh was running, start polling
+    if (monitorData.refresh_running) {
+        pollRefreshStatus(function() { loadMonitor(); });
+    }
+}
+
+
+function pollRefreshStatus(onComplete) {
+    const monBtn = document.getElementById('btn-monitor-refresh');
+    const portBtn = document.getElementById('btn-portfolio-refresh');
+    if (monBtn) { monBtn.disabled = true; monBtn.innerHTML = '<span class="btn-spinner"></span> Pricing...'; }
+    if (portBtn) { portBtn.disabled = true; portBtn.innerHTML = '<span class="btn-spinner"></span> Pricing...'; }
+
+    refreshPollTimer = setInterval(async () => {
+        try {
+            const status = await api('/api/monitor/refresh/status');
+            if (status.status === 'done') {
+                clearInterval(refreshPollTimer);
+                refreshPollTimer = null;
+                if (onComplete) onComplete();
+                else loadMonitor();
+            } else if (status.status === 'error') {
+                clearInterval(refreshPollTimer);
+                refreshPollTimer = null;
+                alert('Refresh error: ' + (status.error || 'Unknown'));
+                if (onComplete) onComplete();
+                else loadMonitor();
+            }
+        } catch (e) {
+            clearInterval(refreshPollTimer);
+            refreshPollTimer = null;
+            if (monBtn) { monBtn.disabled = false; monBtn.textContent = 'Refresh Prices (ThetaData)'; }
+            if (portBtn) { portBtn.disabled = false; portBtn.textContent = 'Refresh Prices'; }
+        }
+    }, 3000);
+}
+
+
+async function refreshMonitorPrices() {
+    const btn = document.getElementById('btn-monitor-refresh');
+    if (!btn) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-spinner"></span> Pricing...';
+
+    try {
+        await api('/api/monitor/refresh', { method: 'POST' });
+        pollRefreshStatus(function() { loadMonitor(); });
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Refresh Prices (ThetaData)';
+        alert('Monitor error: ' + e.message);
+    }
+}
+
+
+async function runSimulation() {
+    const btn = document.getElementById('btn-simulate');
+    if (!btn) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-spinner"></span> Simulating...';
+
+    try {
+        await api('/api/monitor/simulate', { method: 'POST' });
+
+        // Poll for completion
+        simPollTimer = setInterval(async () => {
+            try {
+                const status = await api('/api/monitor/simulate/status');
+                if (status.status === 'done') {
+                    clearInterval(simPollTimer);
+                    simPollTimer = null;
+                    btn.disabled = false;
+                    btn.textContent = 'Run Simulation';
+                    loadMonitor();
+                } else if (status.status === 'error') {
+                    clearInterval(simPollTimer);
+                    simPollTimer = null;
+                    btn.disabled = false;
+                    btn.textContent = 'Run Simulation';
+                    alert('Simulation error: ' + (status.error || 'Unknown'));
+                    loadMonitor();
+                }
+            } catch (e) {
+                clearInterval(simPollTimer);
+                simPollTimer = null;
+                btn.disabled = false;
+                btn.textContent = 'Run Simulation';
+            }
+        }, 3000);
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Run Simulation';
+        alert('Simulation error: ' + e.message);
+    }
+}
+
 
 // ── Init ──
 // ── Vol Ramp (Earnings Straddle) ──
@@ -1053,7 +1608,7 @@ async function loadStraddle() {
         if (charts.length > 0) {
             html += '<div class="risk-charts-grid">';
             for (const c of charts) {
-                html += `<div class="chart-card"><img src="/output/${c}?t=${Date.now()}" alt="${c}" style="width:100%;border-radius:6px;"></div>`;
+                html += `<div class="chart-card"><img src="/output/${c}?t=${Date.now()}" alt="${c}" style="width:100%;"></div>`;
             }
             html += '</div>';
         }

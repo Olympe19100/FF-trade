@@ -19,6 +19,7 @@ Usage:
     python analysis.py
 """
 
+import sys
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -28,10 +29,9 @@ from pathlib import Path
 from datetime import datetime as _dt
 from scipy.optimize import minimize_scalar
 
-ROOT  = Path(r"C:\Users\ANTEC MSI\Desktop\pro\Option trading")
-CACHE = ROOT / "cache"
-OUT   = ROOT / "output"
-OUT.mkdir(exist_ok=True)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.config import CACHE, OUTPUT
+OUT = OUTPUT
 
 # ── FF crossover thresholds (OLD formula: fwd_var/front_var - 1) ──
 # These are the empirical crossover points from the PDF

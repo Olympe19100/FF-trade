@@ -29,26 +29,22 @@ from pathlib import Path
 from datetime import date, datetime, timedelta
 from sklearn.linear_model import LinearRegression
 from scipy import stats as sp_stats
-from scipy.stats import norm as sp_norm
-from scipy.optimize import brentq
 
-ROOT   = Path(r"C:\Users\ANTEC MSI\Desktop\pro\Option trading")
-DB     = ROOT / "sp500_options.db"
-CACHE  = ROOT / "cache"
-OUTPUT = ROOT / "output"
-CACHE.mkdir(exist_ok=True)
-OUTPUT.mkdir(exist_ok=True)
+from core.config import (
+    DB, CACHE, OUTPUT,
+    COMMISSION_LEG, CONTRACT_MULT, MIN_KELLY_TRADES, DEFAULT_ALLOC,
+    SLIPPAGE_BUFFER, get_logger,
+)
+from core.pricing import bs_price, implied_vol_scalar
 
-# ── Strategy parameters (OQuants PPTX slides 19, 36, 41) ──
-ENTRY_WINDOW     = (10, 18)    # calendar days before earnings (slide 19: ±4 days)
-COMMISSION_LEG   = 0.65        # $/contract/leg
-SLIPPAGE_SHARE   = 0.03        # $/share/leg (Muravyev & Pearson 2020: ~40% of quoted spread)
-CONTRACT_MULT    = 100
-MAX_POSITIONS    = 10
+log = get_logger(__name__)
+
+# ── Straddle-specific parameters (OQuants PPTX slides 19, 36, 41) ──
+ENTRY_WINDOW     = (10, 18)    # calendar days before earnings (slide 19: +/-4 days)
+SLIPPAGE_SHARE   = SLIPPAGE_BUFFER  # reuse central value ($/share/leg)
+MAX_POSITIONS    = 10          # straddle-specific (different from calendar's 20)
 MIN_ALLOC_TRADE  = 0.02        # 2% min per trade (slide 41)
 MAX_ALLOC_TRADE  = 0.06        # 6% max per trade (slide 41)
-DEFAULT_ALLOC    = 0.04        # 4% default (mid-range)
-MIN_KELLY_TRADES = 50
 MAX_CONTRACTS    = 10
 INITIAL_CAPITAL  = 100_000
 MIN_OPT_VOLUME   = 20_000      # 20K avg daily option volume (slide 19)
@@ -63,40 +59,6 @@ ACCENT     = "#58a6ff"
 GREEN      = "#3fb950"
 RED        = "#f85149"
 YELLOW     = "#d29922"
-
-
-# ═══════════════════════════════════════════════════════════════
-# Black-Scholes IV Inversion
-# ═══════════════════════════════════════════════════════════════
-
-def _bs_price(S, K, T, sigma, r=0.0, right='C'):
-    """Black-Scholes price for European option."""
-    if T <= 0 or sigma <= 0 or S <= 0:
-        return max(0, (S - K) if right == 'C' else (K - S))
-    sqrt_T = np.sqrt(T)
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * sqrt_T)
-    d2 = d1 - sigma * sqrt_T
-    if right == 'C':
-        return S * sp_norm.cdf(d1) - K * np.exp(-r * T) * sp_norm.cdf(d2)
-    else:
-        return K * np.exp(-r * T) * sp_norm.cdf(-d2) - S * sp_norm.cdf(-d1)
-
-
-def _bs_iv(price, S, K, T, r=0.0, right='C'):
-    """Invert Black-Scholes to get implied volatility using Brent's method."""
-    if T <= 1e-6 or price <= 0 or S <= 0 or K <= 0:
-        return np.nan
-    intrinsic = max(0, (S - K) if right == 'C' else (K - S)) * np.exp(-r * T)
-    if price < intrinsic:
-        return np.nan
-    try:
-        iv = brentq(
-            lambda sigma: _bs_price(S, K, T, sigma, r, right) - price,
-            0.01, 10.0, xtol=1e-6, maxiter=100
-        )
-        return iv
-    except (ValueError, RuntimeError):
-        return np.nan
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -160,10 +122,10 @@ def build_earnings_straddle_history(
     """
     cache_path = CACHE / "straddle_history.pkl"
     if cache_path.exists() and not force_rebuild:
-        print("  Loading cached straddle history...")
+        log.info("Loading cached straddle history...")
         return pd.read_pickle(str(cache_path))
 
-    print("  Building earnings straddle history (first run, ~5-10 min)...")
+    log.info("Building earnings straddle history (first run, ~5-10 min)...")
     prices = _load_prices()
 
     # Trading dates index for lookups
@@ -181,7 +143,7 @@ def build_earnings_straddle_history(
         f"ORDER BY root, report_date",
         conn
     )
-    print(f"  {len(earnings)} earnings events in range")
+    log.info("%d earnings events in range", len(earnings))
 
     # Get all tickers with options
     tickers_with_options = set(
@@ -414,10 +376,10 @@ def build_earnings_straddle_history(
             T_entry = max((exp_dt - entry_dt).days, 1) / 365.0
             T_exit = max((exp_dt - exit_dt).days, 1) / 365.0
 
-            call_iv_entry = _bs_iv(call_mid_entry, underlying_entry, actual_strike,
-                                   T_entry, right='C')
-            put_iv_entry = _bs_iv(put_mid_entry, underlying_entry, actual_strike,
-                                  T_entry, right='P')
+            call_iv_entry = implied_vol_scalar(call_mid_entry, underlying_entry, actual_strike,
+                                   T_entry, r=0.0, right='C')
+            put_iv_entry = implied_vol_scalar(put_mid_entry, underlying_entry, actual_strike,
+                                  T_entry, r=0.0, right='P')
             # Average call/put IV (skip NaN legs)
             ivs_entry = [v for v in [call_iv_entry, put_iv_entry] if not np.isnan(v)]
             if not ivs_entry:
@@ -428,10 +390,10 @@ def build_earnings_straddle_history(
             # Exit IV (for tracking IV change over holding period)
             underlying_exit_pc = actual_strike + call_mid_exit - put_mid_exit
             if underlying_exit_pc > 0:
-                call_iv_exit = _bs_iv(call_mid_exit, underlying_exit_pc,
-                                      actual_strike, T_exit, right='C')
-                put_iv_exit = _bs_iv(put_mid_exit, underlying_exit_pc,
-                                     actual_strike, T_exit, right='P')
+                call_iv_exit = implied_vol_scalar(call_mid_exit, underlying_exit_pc,
+                                      actual_strike, T_exit, r=0.0, right='C')
+                put_iv_exit = implied_vol_scalar(put_mid_exit, underlying_exit_pc,
+                                     actual_strike, T_exit, r=0.0, right='P')
                 ivs_exit = [v for v in [call_iv_exit, put_iv_exit] if not np.isnan(v)]
                 atm_iv_exit = np.mean(ivs_exit) if ivs_exit else np.nan
             else:
@@ -495,20 +457,21 @@ def build_earnings_straddle_history(
 
         processed += 1
         if processed % 50 == 0:
-            print(f"  [{processed}] {root}... {len(results)} events so far")
+            log.info("[%d] %s... %d events so far", processed, root, len(results))
 
     conn.close()
 
     df = pd.DataFrame(results)
-    print(f"\n  Done: {len(df)} valid events")
-    print(f"  Skipped: {n_skip_no_options} no options, {n_skip_no_price} no price, "
-          f"{n_skip_no_contracts} no contracts, {n_skip_low_volume} low volume, "
-          f"{n_skip_no_data} no data")
+    log.info("Done: %d valid events", len(df))
+    log.info("Skipped: %d no options, %d no price, %d no contracts, "
+             "%d low volume, %d no data",
+             n_skip_no_options, n_skip_no_price, n_skip_no_contracts,
+             n_skip_low_volume, n_skip_no_data)
 
     if not df.empty:
         df = df.sort_values(["report_date", "root"]).reset_index(drop=True)
         df.to_pickle(str(cache_path))
-        print(f"  Cached to {cache_path}")
+        log.info("Cached to %s", cache_path)
 
     return df
 
@@ -579,7 +542,8 @@ def compute_signals(history: pd.DataFrame) -> pd.DataFrame:
                 "sig_impl_minus_avg_real"]
     before = len(df)
     df = df.dropna(subset=sig_cols).reset_index(drop=True)
-    print(f"  Signals computed: {len(df)} events ({before - len(df)} dropped for insufficient history)")
+    log.info("Signals computed: %d events (%d dropped for insufficient history)",
+             len(df), before - len(df))
 
     return df
 
@@ -629,8 +593,8 @@ def walk_forward_regression(
     oos = df[df["is_oos"]].copy()
     tradeable = oos[oos["predicted_return"] > 0].copy()
 
-    print(f"  Walk-forward: {len(oos)} OOS predictions, "
-          f"{len(tradeable)} tradeable (pred > 0)")
+    log.info("Walk-forward: %d OOS predictions, %d tradeable (pred > 0)",
+             len(oos), len(tradeable))
 
     # Final model on all data (for display + live scanner)
     mask_all = np.isfinite(X).all(axis=1) & np.isfinite(y)
@@ -1146,7 +1110,7 @@ def scan_upcoming_earnings(
 
     # Merge: IBKR takes priority, DB fills gaps
     if not ibkr_df.empty:
-        print(f"  Scanner: {len(ibkr_df)} earnings from IBKR")
+        log.info("Scanner: %d earnings from IBKR", len(ibkr_df))
         upcoming = ibkr_df
         # Add DB entries for tickers not in IBKR
         if not db_df.empty:
@@ -1154,11 +1118,11 @@ def scan_upcoming_earnings(
             extra = db_df[~db_df["root"].isin(ibkr_tickers)]
             if not extra.empty:
                 upcoming = pd.concat([upcoming, extra], ignore_index=True)
-                print(f"  Scanner: +{len(extra)} from DB (complement)")
+                log.info("Scanner: +%d from DB (complement)", len(extra))
     else:
         upcoming = db_df
         if not upcoming.empty:
-            print(f"  Scanner: {len(upcoming)} earnings from DB (IBKR not connected)")
+            log.info("Scanner: %d earnings from DB (IBKR not connected)", len(upcoming))
 
     if upcoming.empty or history is None or model_info is None:
         return []
@@ -1246,12 +1210,12 @@ def compute_straddle_analytics(force_rebuild: bool = False) -> dict:
                 cached = pickle.load(f)
             # Check if it's still valid
             if "stats" in cached:
-                print("  Using cached straddle analytics")
+                log.info("Using cached straddle analytics")
                 return cached
         except Exception:
             pass
 
-    print("  Computing straddle analytics...")
+    log.info("Computing straddle analytics...")
 
     # Phase 1: Build history
     history = build_earnings_straddle_history(force_rebuild=force_rebuild)
@@ -1303,7 +1267,7 @@ def compute_straddle_analytics(force_rebuild: bool = False) -> dict:
     # Cache
     with open(cache_path, "wb") as f:
         pickle.dump(result, f)
-    print(f"  Cached to {cache_path}")
+    log.info("Cached to %s", cache_path)
 
     return result
 
@@ -1314,34 +1278,34 @@ if __name__ == "__main__":
     result = compute_straddle_analytics(force_rebuild=force)
 
     if "error" in result:
-        print(f"\nError: {result['error']}")
+        log.error("Error: %s", result['error'])
     else:
         stats = result["stats"]
-        print(f"\n{'='*60}")
-        print(f"EARNINGS VOL RAMP BACKTEST RESULTS")
-        print(f"{'='*60}")
-        print(f"  Events:        {result['history_stats']['n_total_events']}")
-        print(f"  Tradeable:     {result['history_stats']['n_tradeable']}")
-        print(f"  Trades:        {stats['n_trades']}")
-        print(f"  Win Rate:      {stats['win_rate']}%")
-        print(f"  Mean Return:   {stats['mean_return']}%")
-        print(f"  Median Return: {stats['median_return']}%")
-        print(f"  Skewness:      {stats['skewness']}")
-        print(f"  CAGR:          {stats['cagr']}%")
-        print(f"  Sharpe:        {stats['sharpe']}")
-        print(f"  Max DD:        {stats['max_drawdown']}%")
-        print(f"  Final Equity:  ${stats['final_equity']:,.0f}")
+        log.info("=" * 60)
+        log.info("EARNINGS VOL RAMP BACKTEST RESULTS")
+        log.info("=" * 60)
+        log.info("Events:        %d", result['history_stats']['n_total_events'])
+        log.info("Tradeable:     %d", result['history_stats']['n_tradeable'])
+        log.info("Trades:        %d", stats['n_trades'])
+        log.info("Win Rate:      %s%%", stats['win_rate'])
+        log.info("Mean Return:   %s%%", stats['mean_return'])
+        log.info("Median Return: %s%%", stats['median_return'])
+        log.info("Skewness:      %s", stats['skewness'])
+        log.info("CAGR:          %s%%", stats['cagr'])
+        log.info("Sharpe:        %s", stats['sharpe'])
+        log.info("Max DD:        %s%%", stats['max_drawdown'])
+        log.info("Final Equity:  $%s", f"{stats['final_equity']:,.0f}")
 
         model = result["model"]
-        print(f"\n  Model R2:      {model['r2']:.4f}")
-        print(f"  OOS Corr:      {model.get('oos_correlation', 'N/A')}")
-        print(f"  OOS p-value:   {model.get('oos_pvalue', 'N/A')}")
-        print(f"\n  Coefficients:")
+        log.info("Model R2:      %.4f", model['r2'])
+        log.info("OOS Corr:      %s", model.get('oos_correlation', 'N/A'))
+        log.info("OOS p-value:   %s", model.get('oos_pvalue', 'N/A'))
+        log.info("Coefficients:")
         for k, v in model["coefficients"].items():
-            print(f"    {k:35s} {v:+.4f}")
+            log.info("  %-35s %+.4f", k, v)
 
         if result["scanner"]:
-            print(f"\n  Upcoming opportunities: {len(result['scanner'])}")
+            log.info("Upcoming opportunities: %d", len(result['scanner']))
             for s in result["scanner"][:5]:
-                print(f"    {s['root']:6s} earnings {s['report_date_str']} "
-                      f"pred={s['predicted_return']:+.1f}%")
+                log.info("  %6s earnings %s pred=%+.1f%%",
+                         s['root'], s['report_date_str'], s['predicted_return'])

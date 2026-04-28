@@ -27,9 +27,6 @@ import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta
 
-# Force unbuffered output so user sees progress in real time
-sys.stdout.reconfigure(line_buffering=True)
-
 # Fix Python 3.14 asyncio event loop before importing ib_insync
 try:
     asyncio.get_event_loop()
@@ -38,63 +35,41 @@ except RuntimeError:
 
 from ib_insync import IB, Stock, Option, Bag, ComboLeg, LimitOrder, MarketOrder, util
 
-# ── Paths ──
-ROOT   = Path(r"C:\Users\ANTEC MSI\Desktop\pro\Option trading")
-OUTPUT = ROOT / "output"
-STATE  = ROOT / "state"
-STATE.mkdir(exist_ok=True)
+from core.config import (
+    OUTPUT, STATE, PORTFOLIO_FILE, TRADES_FILE, BACKTEST_TRADES_FILE,
+    DEFAULT_HOST, TWS_PAPER, GW_PAPER, CLIENT_ID,
+    MAX_POSITIONS, MAX_CONTRACTS, DEFAULT_ALLOC,
+    KELLY_FRAC, MIN_KELLY_TRADES, CONTRACT_MULT,
+    COMMISSION_LEG, SLIPPAGE_BUFFER, CLOSE_DAYS,
+    FILL_TIMEOUT, LMT_WALK_STEP, LMT_WALK_MAX, LMT_WALK_WAIT,
+    COMBO_TIMEOUT, COMBO_WALK_STEP, COMBO_WALK_WAIT,
+    LEG_WALK_STEP, LEG_WALK_WAIT, LEG_MAX_WALK, LEG_TIMEOUT,
+    OPTIMAL_START_ET, OPTIMAL_END_ET, ENFORCE_WINDOW,
+    get_logger,
+)
+from core.portfolio import (
+    load_latest_signals, load_portfolio, save_portfolio,
+    add_position, record_trade,
+    load_trade_history, compute_kelly, cost_per_contract, size_portfolio,
+)
 
-PORTFOLIO_FILE = STATE / "portfolio.json"
-TRADES_FILE    = STATE / "trades.json"
-
-# ── IBKR Connection ──
-DEFAULT_HOST = "127.0.0.1"
-TWS_PAPER    = 7497
-GW_PAPER     = 4002
-CLIENT_ID    = 3
-
-# ── Strategy parameters (match backtest.py) ──
-MAX_POSITIONS    = 20
-MAX_CONTRACTS    = 10
-DEFAULT_ALLOC    = 0.04      # 4% per name
-KELLY_FRAC       = 0.5       # Half Kelly
-MIN_KELLY_TRADES = 50
-CONTRACT_MULT    = 100
-COMMISSION_LEG   = 0.65      # $/leg
-SLIPPAGE_BUFFER  = 0.03      # Extra $/share on limit price (Muravyev & Pearson 2020: ~40% of quoted spread)
-CLOSE_DAYS       = 1         # Close J-1 before front expiry
-FILL_TIMEOUT     = 30        # Seconds to wait per price level
-LMT_WALK_STEP    = 0.05      # $/share step when walking limit price
-LMT_WALK_MAX     = 10        # Max price walk iterations
-LMT_WALK_WAIT    = 15        # Seconds to wait at each price level
-
-# ── Optimal Execution (Muravyev & Pearson 2020, Cont & Kukanov 2013) ──
-COMBO_TIMEOUT    = 300       # 5 min combo attempt (CBOE COB)
-COMBO_WALK_STEP  = 0.05      # $/share step for combo walk
-COMBO_WALK_WAIT  = 30        # Seconds between combo walks
-LEG_WALK_STEP    = 0.02      # $/share step for individual leg walk
-LEG_WALK_WAIT    = 20        # Seconds between leg walks
-LEG_MAX_WALK     = 0.15      # 15% max deviation from mid
-LEG_TIMEOUT      = 120       # 2 min per individual leg
-OPTIMAL_START_ET = "10:00"   # ET optimal window start (Muravyev & Pearson 2020)
-OPTIMAL_END_ET   = "15:00"   # ET optimal window end (avoid first/last 30 min)
-ENFORCE_WINDOW   = True      # Block orders outside optimal window
+log = get_logger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════
 #  CONNECTION
 # ═══════════════════════════════════════════════════════════════
 
-def connect_ibkr(host=DEFAULT_HOST, port=TWS_PAPER, client_id=CLIENT_ID):
+def connect_ibkr(host: str = DEFAULT_HOST, port: int = TWS_PAPER, client_id: int = CLIENT_ID) -> IB:
     """Connect to IBKR TWS/Gateway. Returns IB instance."""
     ib = IB()
-    print(f"Connecting to IBKR at {host}:{port} ...")
+    log.info("Connecting to IBKR at %s:%d ...", host, port)
     ib.connect(host, port, clientId=client_id, timeout=10, readonly=False)
-    print(f"  Connected: {ib.isConnected()}")
+    log.info("  Connected: %s", ib.isConnected())
     return ib
 
 
-def verify_paper(ib):
+def verify_paper(ib: IB) -> str:
     """Verify we're on a paper trading account. Returns account ID."""
     accounts = ib.managedAccounts()
     if not accounts:
@@ -103,17 +78,17 @@ def verify_paper(ib):
     # Paper accounts typically start with 'D' or contain 'PAPER'
     is_paper = acct.startswith("D") or "PAPER" in acct.upper()
     if not is_paper:
-        print(f"  WARNING: Account {acct} may be LIVE (not paper).")
-        print(f"  Paper accounts usually start with 'D'.")
+        log.warning("  Account %s may be LIVE (not paper).", acct)
+        log.warning("  Paper accounts usually start with 'D'.")
         resp = input("  Continue anyway? (yes/no): ").strip().lower()
         if resp != "yes":
             raise RuntimeError("Aborted: not a paper account")
     else:
-        print(f"  Paper account: {acct}")
+        log.info("  Paper account: %s", acct)
     return acct
 
 
-def get_account_info(ib, acct=""):
+def get_account_info(ib: IB, acct: str = "") -> dict:
     """Get key account metrics (handles EUR and USD accounts)."""
     ib.sleep(2)  # Wait for account data
     summary = ib.accountSummary(acct)
@@ -136,40 +111,15 @@ def get_account_info(ib, acct=""):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  SIGNAL READER
-# ═══════════════════════════════════════════════════════════════
-
-def load_latest_signals(top_n=None):
-    """Load the most recent scanner signals CSV."""
-    # Find latest signals file
-    files = sorted(OUTPUT.glob("signals_*.csv"), reverse=True)
-    if not files:
-        print("  No signal files found in output/")
-        return pd.DataFrame()
-
-    latest = files[0]
-    print(f"  Loading signals: {latest.name}")
-    df = pd.read_csv(str(latest))
-
-    # Sort by FF descending
-    df = df.sort_values("ff", ascending=False).reset_index(drop=True)
-
-    if top_n:
-        df = df.head(top_n)
-
-    return df
-
-
-# ═══════════════════════════════════════════════════════════════
 #  CONTRACT BUILDER
 # ═══════════════════════════════════════════════════════════════
 
-def fmt_exp(date_str):
+def fmt_exp(date_str: str) -> str:
     """Convert 'YYYY-MM-DD' to 'YYYYMMDD' for IBKR."""
     return str(date_str).replace("-", "")[:8]
 
 
-def get_ibkr_option_params(ib, ticker):
+def get_ibkr_option_params(ib: IB, ticker: str) -> tuple[set | None, set | None]:
     """Query IBKR for valid option expirations and strikes.
 
     Returns (expirations_set, strikes_set) or (None, None) on failure.
@@ -178,11 +128,11 @@ def get_ibkr_option_params(ib, ticker):
     try:
         ib.qualifyContracts(stock)
     except Exception as ex:
-        print(f"    Cannot qualify stock {ticker}: {ex}")
+        log.error("    Cannot qualify stock %s: %s", ticker, ex)
         return None, None
 
     if stock.conId == 0:
-        print(f"    Stock {ticker} not found on IBKR")
+        log.error("    Stock %s not found on IBKR", ticker)
         return None, None
 
     params_list = ib.reqSecDefOptParams(
@@ -191,7 +141,7 @@ def get_ibkr_option_params(ib, ticker):
     ib.sleep(1)
 
     if not params_list:
-        print(f"    No option params returned for {ticker}")
+        log.error("    No option params returned for %s", ticker)
         return None, None
 
     # Merge all exchanges — take the one with most strikes (usually SMART)
@@ -199,7 +149,7 @@ def get_ibkr_option_params(ib, ticker):
     return set(best.expirations), set(best.strikes)
 
 
-def snap_to_valid(value, valid_set, max_diff=None):
+def snap_to_valid(value: float, valid_set: set, max_diff: float | None = None) -> float | None:
     """Find the closest valid value. Returns None if outside max_diff."""
     if not valid_set:
         return None
@@ -209,12 +159,14 @@ def snap_to_valid(value, valid_set, max_diff=None):
     return closest
 
 
-def create_calendar_legs(ib, ticker, strike, front_exp, back_exp, double=True):
+def create_calendar_legs(ib: IB, ticker: str, strike: float, front_exp: str, back_exp: str,
+                         double: bool = True, put_strike: float | None = None) -> tuple[list, int, float | None, float | None]:
     """Build individual option contracts for a calendar spread.
 
     Returns list of (Option, action) tuples ordered BUY-first (no naked short risk),
-    plus (n_legs, actual_strike) or ([], 0, None) on failure.
+    plus (n_legs, actual_call_strike, actual_put_strike) or ([], 0, None, None) on failure.
 
+    Call legs use `strike`, put legs use `put_strike` (35-delta OTM, different from call).
     Execution order: BUY back-month first, then SELL front-month.
     """
     strike = float(strike)
@@ -224,48 +176,49 @@ def create_calendar_legs(ib, ticker, strike, front_exp, back_exp, double=True):
     # Step 1: Get valid expirations and strikes from IBKR
     valid_exps, valid_strikes = get_ibkr_option_params(ib, ticker)
     if valid_exps is None:
-        return [], 0, None
+        return [], 0, None, None
 
     # Step 2: Snap expiration dates
     ibkr_front = snap_to_valid(front_str, valid_exps)
     ibkr_back = snap_to_valid(back_str, valid_exps)
 
     if ibkr_front is None or ibkr_back is None:
-        print(f"    No matching IBKR expirations for {ticker}: "
-              f"want {front_str}/{back_str}")
-        return [], 0, None
+        log.warning("    No matching IBKR expirations for %s: want %s/%s",
+                    ticker, front_str, back_str)
+        return [], 0, None, None
 
     if ibkr_front == ibkr_back:
-        print(f"    Front and back snap to same expiration for {ticker}")
-        return [], 0, None
+        log.warning("    Front and back snap to same expiration for %s", ticker)
+        return [], 0, None, None
 
     if ibkr_front != front_str or ibkr_back != back_str:
-        print(f"    Snapped exps: {front_str}->{ibkr_front}, {back_str}->{ibkr_back}")
+        log.info("    Snapped exps: %s->%s, %s->%s",
+                 front_str, ibkr_front, back_str, ibkr_back)
 
-    # Step 3: Snap strike
+    # Step 3: Snap call strike
     max_strike_diff = strike * 0.03
-    ibkr_strike = snap_to_valid(strike, valid_strikes, max_diff=max_strike_diff)
-    if ibkr_strike is None:
-        print(f"    No valid IBKR strike near {strike:.0f} for {ticker}")
-        return [], 0, None
+    ibkr_call_strike = snap_to_valid(strike, valid_strikes, max_diff=max_strike_diff)
+    if ibkr_call_strike is None:
+        log.warning("    No valid IBKR call strike near %.0f for %s", strike, ticker)
+        return [], 0, None, None
 
-    if ibkr_strike != strike:
-        print(f"    Snapped strike: {strike:.1f} -> {ibkr_strike}")
+    if ibkr_call_strike != strike:
+        log.info("    Snapped call strike: %.1f -> %s", strike, ibkr_call_strike)
 
     # Step 4: Create and qualify call options
-    front_call = Option(ticker, ibkr_front, ibkr_strike, "C", "SMART", "100", "USD")
-    back_call  = Option(ticker, ibkr_back,  ibkr_strike, "C", "SMART", "100", "USD")
+    front_call = Option(ticker, ibkr_front, ibkr_call_strike, "C", "SMART", "100", "USD")
+    back_call  = Option(ticker, ibkr_back,  ibkr_call_strike, "C", "SMART", "100", "USD")
 
     try:
         ib.qualifyContracts(front_call, back_call)
     except Exception as ex:
-        print(f"    Failed to qualify call options for {ticker}: {ex}")
-        return [], 0, None
+        log.error("    Failed to qualify call options for %s: %s", ticker, ex)
+        return [], 0, None, None
 
     if front_call.conId == 0 or back_call.conId == 0:
-        print(f"    Could not resolve call contracts for {ticker} "
-              f"K={ibkr_strike} {ibkr_front}/{ibkr_back}")
-        return [], 0, None
+        log.error("    Could not resolve call contracts for %s K=%s %s/%s",
+                  ticker, ibkr_call_strike, ibkr_front, ibkr_back)
+        return [], 0, None, None
 
     # BUY first, then SELL (never naked short)
     legs = [
@@ -273,30 +226,43 @@ def create_calendar_legs(ib, ticker, strike, front_exp, back_exp, double=True):
         (front_call, "SELL"),
     ]
 
-    # Put legs for double calendar
-    if double:
-        front_put = Option(ticker, ibkr_front, ibkr_strike, "P", "SMART", "100", "USD")
-        back_put  = Option(ticker, ibkr_back,  ibkr_strike, "P", "SMART", "100", "USD")
-        try:
-            ib.qualifyContracts(front_put, back_put)
-            if front_put.conId > 0 and back_put.conId > 0:
-                legs.extend([
-                    (back_put,  "BUY"),
-                    (front_put, "SELL"),
-                ])
-            else:
-                print(f"    Put contracts not found for {ticker}, using single calendar")
-        except Exception:
-            print(f"    Put qualification failed for {ticker}, using single calendar")
+    actual_put_strike = None
 
-    return legs, len(legs), ibkr_strike
+    # Put legs for double calendar (separate put strike)
+    if double:
+        # Use put_strike if provided, otherwise fall back to call strike
+        ps = float(put_strike) if put_strike is not None else strike
+        ibkr_put_strike = snap_to_valid(ps, valid_strikes, max_diff=ps * 0.03)
+        if ibkr_put_strike is None:
+            log.warning("    No valid IBKR put strike near %.0f for %s, using single calendar",
+                        ps, ticker)
+        else:
+            if ibkr_put_strike != ps:
+                log.info("    Snapped put strike: %.1f -> %s", ps, ibkr_put_strike)
+
+            front_put = Option(ticker, ibkr_front, ibkr_put_strike, "P", "SMART", "100", "USD")
+            back_put  = Option(ticker, ibkr_back,  ibkr_put_strike, "P", "SMART", "100", "USD")
+            try:
+                ib.qualifyContracts(front_put, back_put)
+                if front_put.conId > 0 and back_put.conId > 0:
+                    legs.extend([
+                        (back_put,  "BUY"),
+                        (front_put, "SELL"),
+                    ])
+                    actual_put_strike = ibkr_put_strike
+                else:
+                    log.warning("    Put contracts not found for %s, using single calendar", ticker)
+            except Exception:
+                log.warning("    Put qualification failed for %s, using single calendar", ticker)
+
+    return legs, len(legs), ibkr_call_strike, actual_put_strike
 
 
 # ═══════════════════════════════════════════════════════════════
 #  OPTIMAL EXECUTION (Muravyev & Pearson 2020, Cont & Kukanov 2013)
 # ═══════════════════════════════════════════════════════════════
 
-def check_optimal_window():
+def check_optimal_window() -> tuple[bool, str]:
     """Check if current time is within optimal trading window.
 
     Returns (is_optimal: bool, message: str).
@@ -324,7 +290,7 @@ def check_optimal_window():
     return is_optimal, msg
 
 
-def create_calendar_combo(legs):
+def create_calendar_combo(legs: list[tuple[Option, str]]) -> Bag | None:
     """Build a BAG (combo) contract from qualified individual legs.
 
     Args:
@@ -356,7 +322,7 @@ def create_calendar_combo(legs):
     return combo
 
 
-def get_combo_mid_price(ib, combo):
+def get_combo_mid_price(ib: IB, combo: Bag) -> tuple[float, float, float]:
     """Request market data for a combo and return (bid, ask, mid).
 
     Returns (0, 0, 0) if data unavailable (common on paper accounts).
@@ -379,7 +345,7 @@ def get_combo_mid_price(ib, combo):
     return bid, ask, mid
 
 
-def get_leg_mid_price(ib, option_contract):
+def get_leg_mid_price(ib: IB, option_contract: Option) -> tuple[float, float, float]:
     """Get current bid/ask/mid for a single option contract.
 
     Returns (bid, ask, mid). Returns (0, 0, 0) if data unavailable.
@@ -402,7 +368,7 @@ def get_leg_mid_price(ib, option_contract):
     return bid, ask, mid
 
 
-def execute_combo_order(ib, combo, contracts, eodhd_mid):
+def execute_combo_order(ib: IB, combo: Bag, contracts: int, eodhd_mid: float) -> tuple[bool, float, float]:
     """Try to fill a combo order with price walking.
 
     Strategy (ORATS methodology, 56% spread slippage):
@@ -415,15 +381,15 @@ def execute_combo_order(ib, combo, contracts, eodhd_mid):
     bid, ask, mid = get_combo_mid_price(ib, combo)
 
     if mid <= 0:
-        print(f"      Combo: no market data (bid={bid}, ask={ask}), skipping")
+        log.warning("      Combo: no market data (bid=%s, ask=%s), skipping", bid, ask)
         return False, 0.0, 0.0
 
     # Calendar spread is a debit: we BUY the combo
     limit_price = round(mid, 2)
     max_price = round(ask, 2) if ask > 0 else round(mid * 1.15, 2)
 
-    print(f"      Combo: bid={bid:.2f} ask={ask:.2f} mid={mid:.2f}, "
-          f"LMT start @ {limit_price:.2f}")
+    log.info("      Combo: bid=%.2f ask=%.2f mid=%.2f, LMT start @ %.2f",
+             bid, ask, mid, limit_price)
 
     n_walks = int(COMBO_TIMEOUT / COMBO_WALK_WAIT)
 
@@ -440,11 +406,11 @@ def execute_combo_order(ib, combo, contracts, eodhd_mid):
             if status == "Filled":
                 fill_px = trade.orderStatus.avgFillPrice
                 slippage = fill_px - eodhd_mid
-                print(f"      Combo FILLED @ ${fill_px:.2f} "
-                      f"(slip={slippage:+.2f} vs EODHD ${eodhd_mid:.2f})")
+                log.info("      Combo FILLED @ $%.2f (slip=%+.2f vs EODHD $%.2f)",
+                         fill_px, slippage, eodhd_mid)
                 return True, fill_px, slippage
             elif status in ("Cancelled", "ApiCancelled", "Inactive"):
-                print(f"      Combo rejected: {status}")
+                log.error("      Combo rejected: %s", status)
                 return False, 0.0, 0.0
 
         # Not filled — cancel and walk price
@@ -453,18 +419,18 @@ def execute_combo_order(ib, combo, contracts, eodhd_mid):
 
         new_price = round(limit_price + COMBO_WALK_STEP, 2)
         if new_price > max_price:
-            print(f"      Combo: hit ceiling ${max_price:.2f}, giving up")
+            log.info("      Combo: hit ceiling $%.2f, giving up", max_price)
             break
 
         limit_price = new_price
-        print(f"      Combo: walk -> ${limit_price:.2f} "
-              f"(step {walk+1}/{n_walks})", flush=True)
+        log.info("      Combo: walk -> $%.2f (step %d/%d)",
+                 limit_price, walk + 1, n_walks)
 
-    print(f"      Combo: not filled after {COMBO_TIMEOUT}s")
+    log.info("      Combo: not filled after %ds", COMBO_TIMEOUT)
     return False, 0.0, 0.0
 
 
-def execute_leg_order(ib, leg_contract, action, contracts, eodhd_mid=0):
+def execute_leg_order(ib: IB, leg_contract: Option, action: str, contracts: int, eodhd_mid: float = 0) -> tuple[bool, float]:
     """Execute a single leg with adaptive LMT price walking.
 
     Strategy (Cont & Kukanov 2013, SteadyOptions):
@@ -478,13 +444,13 @@ def execute_leg_order(ib, leg_contract, action, contracts, eodhd_mid=0):
     bid, ask, mid = get_leg_mid_price(ib, leg_contract)
 
     if mid <= 0 and eodhd_mid > 0:
-        print(f"        No live data, using EODHD mid=${eodhd_mid:.2f}")
+        log.info("        No live data, using EODHD mid=$%.2f", eodhd_mid)
         mid = eodhd_mid
         bid = eodhd_mid * 0.90
         ask = eodhd_mid * 1.10
 
     if mid <= 0:
-        print(f"        No price data at all, using MKT")
+        log.warning("        No price data at all, using MKT")
         # Fallback to MKT as last resort
         order = MarketOrder(action, contracts)
         order.outsideRth = False
@@ -511,10 +477,9 @@ def execute_leg_order(ib, leg_contract, action, contracts, eodhd_mid=0):
 
     right_label = leg_contract.right
     exp_label = leg_contract.lastTradeDateOrContractMonth
-    print(f"      {action} {right_label} {exp_label} "
-          f"K={leg_contract.strike:.0f} x{contracts} "
-          f"LMT ${limit_price:.2f} (bid={bid:.2f} ask={ask:.2f})",
-          end="", flush=True)
+    log.info("      %s %s %s K=%.0f x%d LMT $%.2f (bid=%.2f ask=%.2f)",
+             action, right_label, exp_label,
+             leg_contract.strike, contracts, limit_price, bid, ask)
 
     elapsed = 0
     order = None
@@ -533,10 +498,10 @@ def execute_leg_order(ib, leg_contract, action, contracts, eodhd_mid=0):
             status = trade.orderStatus.status
             if status == "Filled":
                 fill_px = trade.orderStatus.avgFillPrice
-                print(f" -> FILLED @ ${fill_px:.2f}")
+                log.info("        -> FILLED @ $%.2f", fill_px)
                 return True, fill_px
             elif status in ("Cancelled", "ApiCancelled", "Inactive"):
-                print(f" -> REJECTED ({status})")
+                log.error("        -> REJECTED (%s)", status)
                 return False, 0.0
 
         if elapsed >= LEG_TIMEOUT:
@@ -549,14 +514,14 @@ def execute_leg_order(ib, leg_contract, action, contracts, eodhd_mid=0):
 
         new_price = round(limit_price + walk_dir, 2)
         if action == "BUY" and new_price > max_limit:
-            print(f" -> hit ceiling ${max_limit:.2f}")
+            log.info("        -> hit ceiling $%.2f", max_limit)
             break
         elif action == "SELL" and new_price < max_limit:
-            print(f" -> hit floor ${max_limit:.2f}")
+            log.info("        -> hit floor $%.2f", max_limit)
             break
 
         limit_price = new_price
-        print(f" ${limit_price:.2f}", end="", flush=True)
+        log.info("        walk -> $%.2f", limit_price)
 
     # Final cancel
     if order:
@@ -566,12 +531,12 @@ def execute_leg_order(ib, leg_contract, action, contracts, eodhd_mid=0):
         except Exception:
             pass
 
-    print(f" -> NOT FILLED ({elapsed}s)")
+    log.info("        -> NOT FILLED (%ds)", elapsed)
     return False, 0.0
 
 
-def execute_spread_optimal(ib, ticker, legs, n_legs, contracts,
-                           eodhd_cps, spread_type):
+def execute_spread_optimal(ib: IB, ticker: str, legs: list[tuple[Option, str]], n_legs: int, contracts: int,
+                           eodhd_cps: float, spread_type: str) -> tuple[str, float, float, dict]:
     """Execute a calendar spread using optimal execution strategy.
 
     Step A: Try combo order (LMT at mid, walk toward natural) — 5 min
@@ -588,7 +553,7 @@ def execute_spread_optimal(ib, ticker, legs, n_legs, contracts,
     }
 
     # ── Step A: Try combo order ──
-    print(f"    {ticker}: Step A — Combo ({n_legs} legs as BAG)")
+    log.info("    %s: Step A -- Combo (%d legs as BAG)", ticker, n_legs)
     combo = create_calendar_combo(legs)
 
     if combo is not None:
@@ -602,12 +567,12 @@ def execute_spread_optimal(ib, ticker, legs, n_legs, contracts,
             return "full", fill_px, slippage, details
         else:
             details["combo_result"] = "no_fill"
-            print(f"    {ticker}: Combo failed -> fallback to individual legs")
+            log.info("    %s: Combo failed -> fallback to individual legs", ticker)
     else:
-        print(f"    {ticker}: Cannot build combo -> individual legs")
+        log.info("    %s: Cannot build combo -> individual legs", ticker)
 
     # ── Step B: Individual legs (BUY back-month first) ──
-    print(f"    {ticker}: Step B — Individual legs (LMT + walk)")
+    log.info("    %s: Step B -- Individual legs (LMT + walk)", ticker)
     details["method"] = "legs"
 
     filled_legs = []
@@ -631,214 +596,27 @@ def execute_spread_optimal(ib, ticker, legs, n_legs, contracts,
             })
             details["leg_fills"].append(filled_legs[-1])
         else:
-            print(f"    {ticker}: Leg failed, stopping (no naked short risk)")
+            log.error("    %s: Leg failed, stopping (no naked short risk)", ticker)
             break
 
     if len(filled_legs) == n_legs:
         slippage = total_fill_cost - eodhd_cps
-        print(f"    {ticker}: ALL {n_legs} LEGS FILLED, "
-              f"net=${total_fill_cost:.2f}/sh "
-              f"(slip={slippage:+.2f} vs EODHD ${eodhd_cps:.2f})")
+        log.info("    %s: ALL %d LEGS FILLED, net=$%.2f/sh (slip=%+.2f vs EODHD $%.2f)",
+                 ticker, n_legs, total_fill_cost, slippage, eodhd_cps)
         return "full", total_fill_cost, slippage, details
     elif filled_legs:
-        print(f"    {ticker}: PARTIAL {len(filled_legs)}/{n_legs} legs. "
-              f"Manual cleanup needed.")
+        log.warning("    %s: PARTIAL %d/%d legs. Manual cleanup needed.",
+                    ticker, len(filled_legs), n_legs)
         return "partial", total_fill_cost, 0.0, details
     else:
         return "failed", 0.0, 0.0, details
 
 
 # ═══════════════════════════════════════════════════════════════
-#  POSITION SIZING — Half Kelly (f/2), same as backtest.py
-# ═══════════════════════════════════════════════════════════════
-#
-# Kelly fractionnaire a 1/2 : f = 0.5 * mu / var
-# Minimise la variance du portefeuille global.
-# Bootstrap from backtest trades (347 trades), then walk-forward
-# with live trades as they accumulate.
-
-BACKTEST_TRADES_FILE = OUTPUT / "backtest_trades.csv"
-
-
-def load_trade_history():
-    """Load return history: backtest + live trades for Kelly."""
-    returns = []
-
-    # 1. Bootstrap from backtest trades (347 trades, 2016-2025)
-    if BACKTEST_TRADES_FILE.exists():
-        try:
-            bt = pd.read_csv(str(BACKTEST_TRADES_FILE))
-            if "return_pct" in bt.columns:
-                returns.extend(bt["return_pct"].dropna().tolist())
-        except Exception:
-            pass
-
-    # 2. Append live trades (walk-forward)
-    if TRADES_FILE.exists():
-        try:
-            with open(TRADES_FILE) as f:
-                data = json.load(f)
-            for t in data.get("trades", []):
-                if t.get("return_pct") is not None:
-                    returns.append(t["return_pct"])
-        except Exception:
-            pass
-
-    return returns
-
-
-def compute_kelly(returns):
-    """Compute Half Kelly fraction from trade returns.
-
-    f = 0.5 * mu / var  (fractionnaire a 1/2)
-    Same formula as backtest.py lines 154-163.
-    """
-    if len(returns) < MIN_KELLY_TRADES:
-        return DEFAULT_ALLOC
-
-    arr = np.array(returns)
-    mu = arr.mean()
-    var = arr.var()
-
-    if var > 0 and mu > 0:
-        return min(KELLY_FRAC * mu / var, 1.0)
-    return DEFAULT_ALLOC
-
-
-def cost_per_contract(cost_per_share, n_legs=4):
-    """Cost per contract including slippage + commission."""
-    return (cost_per_share + SLIPPAGE_BUFFER) * CONTRACT_MULT + COMMISSION_LEG * n_legs
-
-
-def size_portfolio(signals_info, kelly_f, account_value):
-    """Two-pass sizing: guarantee all positions get 1 contract, then add Kelly extras.
-
-    Pass 1: Reserve 1 contract per position (minimum deployment).
-    Pass 2: Distribute remaining Kelly budget as extra contracts
-            (cheapest positions get extras first).
-
-    Args:
-        signals_info: list of (ticker, cost_per_share, n_legs) for each position
-        kelly_f: Kelly fraction (e.g. 0.041)
-        account_value: total account value
-
-    Returns:
-        list of (ticker, contracts, deployed) tuples
-    """
-    n_pos = len(signals_info)
-    if n_pos == 0:
-        return []
-
-    kelly_target = kelly_f * account_value
-
-    # Pass 1: 1 contract per position (guaranteed entry)
-    sizing = []
-    for ticker, cps, n_legs in signals_info:
-        cpc = cost_per_contract(cps, n_legs)
-        if cpc <= 0:
-            sizing.append((ticker, 0, cpc))
-            continue
-        sizing.append((ticker, 1, cpc))
-
-    # Pass 2: distribute remaining budget as extra contracts
-    min_deployed = sum(n * cpc for _, n, cpc in sizing)
-    extra_budget = max(0, kelly_target - min_deployed)
-
-    if extra_budget > 0:
-        # Sort by cheapest cpc first — fill cheapest positions first
-        order = sorted(range(len(sizing)), key=lambda i: sizing[i][2])
-        for idx in order:
-            ticker, n, cpc = sizing[idx]
-            if cpc <= 0 or n >= MAX_CONTRACTS:
-                continue
-            add = min(int(extra_budget / cpc), MAX_CONTRACTS - n)
-            if add > 0:
-                sizing[idx] = (ticker, n + add, cpc)
-                extra_budget -= add * cpc
-            if extra_budget <= 0:
-                break
-
-    result = []
-    for ticker, n, cpc in sizing:
-        result.append((ticker, n, n * cpc))
-    return result
-
-
-# ═══════════════════════════════════════════════════════════════
-#  STATE MANAGEMENT
-# ═══════════════════════════════════════════════════════════════
-
-def load_portfolio():
-    """Load active positions from state file."""
-    if PORTFOLIO_FILE.exists():
-        with open(PORTFOLIO_FILE) as f:
-            return json.load(f)
-    return {"positions": [], "last_updated": None}
-
-
-def save_portfolio(portfolio):
-    """Save positions to state file."""
-    portfolio["last_updated"] = datetime.now().isoformat()
-    with open(PORTFOLIO_FILE, "w") as f:
-        json.dump(portfolio, f, indent=2)
-
-
-def add_position(portfolio, ticker, combo, strike, front_exp, back_exp,
-                 contracts, cost_per_share, spread_type, ff, n_legs):
-    """Add a new position to portfolio state."""
-    commission = n_legs * COMMISSION_LEG * contracts
-    total_cost = cost_per_share * CONTRACT_MULT * contracts + commission
-
-    pos = {
-        "id": f"{ticker}_{combo}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-        "ticker": ticker,
-        "combo": combo,
-        "strike": float(strike),
-        "spread_type": spread_type,
-        "front_exp": str(front_exp),
-        "back_exp": str(back_exp),
-        "entry_date": datetime.now().strftime("%Y-%m-%d"),
-        "contracts": contracts,
-        "cost_per_share": float(cost_per_share),
-        "total_deployed": round(total_cost, 2),
-        "n_legs": n_legs,
-        "ff": float(ff),
-    }
-    portfolio["positions"].append(pos)
-    return pos
-
-
-def record_trade(position, exit_price, pnl, return_pct):
-    """Append closed trade to trades.json."""
-    if TRADES_FILE.exists():
-        with open(TRADES_FILE) as f:
-            data = json.load(f)
-    else:
-        data = {"trades": []}
-
-    data["trades"].append({
-        "id": position["id"],
-        "ticker": position["ticker"],
-        "combo": position["combo"],
-        "entry_date": position["entry_date"],
-        "exit_date": datetime.now().strftime("%Y-%m-%d"),
-        "contracts": position["contracts"],
-        "cost_per_share": position["cost_per_share"],
-        "exit_price": round(exit_price, 4),
-        "pnl": round(pnl, 2),
-        "return_pct": round(return_pct, 4),
-        "ff": position["ff"],
-    })
-
-    with open(TRADES_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-
-# ═══════════════════════════════════════════════════════════════
 #  ENTER NEW POSITIONS (--enter)
 # ═══════════════════════════════════════════════════════════════
 
-def enter_new_positions(ib, acct, max_new=None):
+def enter_new_positions(ib: IB, acct: str, max_new: int | None = None) -> dict | None:
     """Place new calendar spread orders from scanner signals.
 
     Two-pass approach:
@@ -846,9 +624,9 @@ def enter_new_positions(ib, acct, max_new=None):
       Pass 2: Size all positions globally via Kelly to hit target allocation
       Pass 3: Place orders
     """
-    print("\n" + "=" * 60)
-    print("ENTERING NEW POSITIONS")
-    print("=" * 60)
+    log.info("=" * 60)
+    log.info("ENTERING NEW POSITIONS")
+    log.info("=" * 60)
 
     # Load signals
     signals = load_latest_signals()
@@ -866,7 +644,7 @@ def enter_new_positions(ib, acct, max_new=None):
         slots = min(slots, max_new)
 
     if slots <= 0:
-        print(f"  Portfolio full: {n_active}/{MAX_POSITIONS} positions")
+        log.info("  Portfolio full: %d/%d positions", n_active, MAX_POSITIONS)
         return
 
     # Account info
@@ -879,18 +657,18 @@ def enter_new_positions(ib, acct, max_new=None):
     kelly_f = compute_kelly(returns)
     kelly_target = kelly_f * account_value
 
-    print(f"  Active:        {n_active}/{MAX_POSITIONS}")
-    print(f"  Slots:         {slots}")
-    print(f"  Signals:       {len(signals)}")
-    print(f"  Account:       ${account_value:,.0f}")
-    print(f"  Buying power:  ${buying_power:,.0f}")
-    print(f"  Kelly history: {len(returns)} trades")
-    print(f"  Half Kelly f:  {kelly_f:.4f} ({kelly_f:.1%})")
-    print(f"  Kelly target:  ${kelly_target:,.0f} (f * W)")
+    log.info("  Active:        %d/%d", n_active, MAX_POSITIONS)
+    log.info("  Slots:         %d", slots)
+    log.info("  Signals:       %d", len(signals))
+    log.info("  Account:       $%,.0f", account_value)
+    log.info("  Buying power:  $%,.0f", buying_power)
+    log.info("  Kelly history: %d trades", len(returns))
+    log.info("  Half Kelly f:  %.4f (%.1f%%)", kelly_f, kelly_f * 100)
+    log.info("  Kelly target:  $%,.0f (f * W)", kelly_target)
 
     # ── PASS 1: Qualify all contracts (individual legs) ──
-    print(f"\n  --- PASS 1: Qualifying contracts on IBKR ---")
-    qualified = []  # (sig, legs, n_legs, actual_strike, cost_per_share, spread_type)
+    log.info("  --- PASS 1: Qualifying contracts on IBKR ---")
+    qualified = []  # (sig, legs, n_legs, actual_strike, actual_put_strike, cost_per_share, spread_type)
     skipped = 0
 
     for _, sig in signals.iterrows():
@@ -905,71 +683,83 @@ def enter_new_positions(ib, acct, max_new=None):
         spread_type = "double" if has_double else "single"
         cps = sig["dbl_cost"] if has_double else sig["call_cost"]
 
-        print(f"    {ticker} {sig['combo']} K={sig['strike']:.0f} "
-              f"FF={sig['ff']:.1f}% ${cps:.2f} ({spread_type}) ... ", end="")
+        # Read put_strike from signal (separate from call strike for 35-delta)
+        sig_put_strike = sig.get("put_strike")
+        if pd.isna(sig_put_strike):
+            sig_put_strike = None
 
-        legs, n_legs, actual_strike = create_calendar_legs(
+        ps_str = " PutK=%.0f" % sig_put_strike if sig_put_strike else ""
+        log.info("    %s %s CallK=%.0f%s FF=%.1f%% $%.2f (%s) ...",
+                 ticker, sig['combo'], sig['strike'], ps_str,
+                 sig['ff'], cps, spread_type)
+
+        legs, n_legs, actual_strike, actual_put_strike = create_calendar_legs(
             ib, ticker, sig["strike"],
             sig["front_exp"], sig["back_exp"],
-            double=has_double
+            double=has_double,
+            put_strike=sig_put_strike
         )
         if not legs:
-            print("SKIP")
+            log.info("    -> SKIP")
             skipped += 1
             continue
 
-        print("OK")
-        qualified.append((sig, legs, n_legs, actual_strike, cps, spread_type))
+        log.info("    -> OK")
+        qualified.append((sig, legs, n_legs, actual_strike, actual_put_strike, cps, spread_type))
 
-    print(f"  Qualified: {len(qualified)}/{len(qualified)+skipped} "
-          f"({skipped} skipped)")
+    log.info("  Qualified: %d/%d (%d skipped)",
+             len(qualified), len(qualified) + skipped, skipped)
 
     if not qualified:
         return
 
     # ── PASS 2: Global Kelly sizing ──
-    print(f"\n  --- PASS 2: Kelly sizing ({len(qualified)} positions) ---")
-    signals_info = [(q[0]["ticker"], q[4], q[2]) for q in qualified]
+    log.info("  --- PASS 2: Kelly sizing (%d positions) ---", len(qualified))
+    # qualified tuple: (sig, legs, n_legs, actual_strike, actual_put_strike, cps, spread_type)
+    signals_info = [(q[0]["ticker"], q[5], q[2]) for q in qualified]
     sizing = size_portfolio(signals_info, kelly_f, account_value)
 
     total_deployed = sum(d for _, _, d in sizing)
-    print(f"  Kelly target:  ${kelly_target:,.0f}")
-    print(f"  Total sized:   ${total_deployed:,.0f}")
-    print(f"  Gap:           ${kelly_target - total_deployed:+,.0f} "
-          f"({(total_deployed/kelly_target - 1)*100:+.1f}%)")
+    log.info("  Kelly target:  $%,.0f", kelly_target)
+    log.info("  Total sized:   $%,.0f", total_deployed)
+    gap = kelly_target - total_deployed
+    gap_pct = (total_deployed / kelly_target - 1) * 100 if kelly_target else 0
+    log.info("  Gap:           $%+,.0f (%+.1f%%)", gap, gap_pct)
 
-    print(f"\n  {'Ticker':>6s} {'FF%':>6s} {'Cost':>6s} {'Ctr':>4s} {'Deployed':>9s}")
-    print(f"  {'-'*38}")
-    for (sig, *_rest), (ticker, n_ctr, deployed) in zip(qualified, sizing):
-        print(f"  {ticker:>6s} {sig['ff']:>5.1f}% ${_rest[3]:>5.2f} {n_ctr:>4d} ${deployed:>8,.0f}")
+    log.info("  %6s %6s %6s %4s %9s", "Ticker", "FF%", "Cost", "Ctr", "Deployed")
+    log.info("  %s", "-" * 38)
+    for (sig, _legs, _nl, _as, _aps, cps_q, _st), (ticker, n_ctr, deployed) in zip(qualified, sizing):
+        log.info("  %6s %5.1f%% $%5.2f %4d $%8,.0f",
+                 ticker, sig['ff'], cps_q, n_ctr, deployed)
 
     # ── Time-of-day check ──
     is_optimal, time_msg = check_optimal_window()
-    print(f"\n  {time_msg}")
+    log.info("  %s", time_msg)
     if ENFORCE_WINDOW and not is_optimal:
-        print(f"  Orders blocked — retry between {OPTIMAL_START_ET}-{OPTIMAL_END_ET} ET.")
+        log.warning("  Orders blocked -- retry between %s-%s ET.",
+                    OPTIMAL_START_ET, OPTIMAL_END_ET)
         return
 
     # ── PASS 3: Optimal execution (combo-first, legs-fallback) ──
-    print(f"\n  --- PASS 3: Optimal execution ({len(qualified)} spreads) ---")
-    print(f"  Strategy: combo LMT first ({COMBO_TIMEOUT}s) -> "
-          f"individual legs LMT+walk ({LEG_TIMEOUT}s/leg)")
+    log.info("  --- PASS 3: Optimal execution (%d spreads) ---", len(qualified))
+    log.info("  Strategy: combo LMT first (%ds) -> individual legs LMT+walk (%ds/leg)",
+             COMBO_TIMEOUT, LEG_TIMEOUT)
     entered = 0
     partial = 0
     not_filled = 0
     slippage_log = []
 
-    for (sig, legs, n_legs, actual_strike, cps, spread_type), \
+    for (sig, legs, n_legs, actual_strike, actual_put_strike, cps, spread_type), \
         (ticker, contracts, deployed) in zip(qualified, sizing):
         if contracts <= 0:
             continue
 
         if deployed > buying_power * 0.9:
-            print(f"    {ticker}: SKIP (${deployed:,.0f} > buying power)")
+            log.warning("    %s: SKIP ($%,.0f > buying power)", ticker, deployed)
             continue
 
-        print(f"\n    {ticker}: {contracts}x {spread_type} "
-              f"({n_legs} legs, EODHD mid=${cps:.2f})")
+        log.info("    %s: %dx %s (%d legs, EODHD mid=$%.2f)",
+                 ticker, contracts, spread_type, n_legs, cps)
 
         result, fill_cost, slippage, details = execute_spread_optimal(
             ib, ticker, legs, n_legs, contracts, cps, spread_type
@@ -988,7 +778,8 @@ def enter_new_positions(ib, acct, max_new=None):
             pos = add_position(
                 portfolio, ticker, sig["combo"], actual_strike,
                 sig["front_exp"], sig["back_exp"],
-                contracts, fill_cost, spread_type, sig["ff"], n_legs
+                contracts, fill_cost, spread_type, sig["ff"], n_legs,
+                put_strike=actual_put_strike
             )
             pos["execution_method"] = details.get("method")
             pos["slippage"] = round(slippage, 4)
@@ -1004,33 +795,34 @@ def enter_new_positions(ib, acct, max_new=None):
 
     # ── Slippage Report ──
     if slippage_log:
-        print(f"\n  {'='*55}")
-        print(f"  SLIPPAGE REPORT")
-        print(f"  {'Ticker':>6s} {'Method':>6s} {'EODHD':>7s} "
-              f"{'Fill':>7s} {'Slip':>7s} {'Result':>8s}")
-        print(f"  {'-'*55}")
+        log.info("  %s", "=" * 55)
+        log.info("  SLIPPAGE REPORT")
+        log.info("  %6s %6s %7s %7s %7s %8s",
+                 "Ticker", "Method", "EODHD", "Fill", "Slip", "Result")
+        log.info("  %s", "-" * 55)
         for s in slippage_log:
-            print(f"  {s['ticker']:>6s} {(s['method'] or '-'):>6s} "
-                  f"${s['eodhd_mid']:>6.2f} ${s['fill_cost']:>6.2f} "
-                  f"${s['slippage']:>+6.2f} {s['result']:>8s}")
+            log.info("  %6s %6s $%6.2f $%6.2f $%+6.2f %8s",
+                     s['ticker'], s['method'] or '-',
+                     s['eodhd_mid'], s['fill_cost'],
+                     s['slippage'], s['result'])
 
         filled_slips = [s["slippage"] for s in slippage_log
                         if s["result"] == "full"]
         if filled_slips:
             avg_slip = np.mean(filled_slips)
-            print(f"\n  Avg slippage: ${avg_slip:+.3f}/sh "
-                  f"({len(filled_slips)} fills)")
+            log.info("  Avg slippage: $%+.3f/sh (%d fills)",
+                     avg_slip, len(filled_slips))
 
-    print(f"\n  {'='*40}")
-    print(f"  SUMMARY")
-    print(f"  Kelly f:       {kelly_f:.4f} ({kelly_f:.1%})")
-    print(f"  Kelly target:  ${kelly_target:,.0f}")
-    print(f"  Total sized:   ${total_deployed:,.0f}")
-    print(f"  Full fills:    {entered}/{len(qualified)}")
-    print(f"  Partial fills: {partial}")
-    print(f"  Not filled:    {not_filled}")
-    print(f"  Skipped IBKR:  {skipped}")
-    print(f"  Total active:  {n_active + entered}/{MAX_POSITIONS}")
+    log.info("  %s", "=" * 40)
+    log.info("  SUMMARY")
+    log.info("  Kelly f:       %.4f (%.1f%%)", kelly_f, kelly_f * 100)
+    log.info("  Kelly target:  $%,.0f", kelly_target)
+    log.info("  Total sized:   $%,.0f", total_deployed)
+    log.info("  Full fills:    %d/%d", entered, len(qualified))
+    log.info("  Partial fills: %d", partial)
+    log.info("  Not filled:    %d", not_filled)
+    log.info("  Skipped IBKR:  %d", skipped)
+    log.info("  Total active:  %d/%d", n_active + entered, MAX_POSITIONS)
 
     return {
         "entered": entered,
@@ -1046,11 +838,11 @@ def enter_new_positions(ib, acct, max_new=None):
 #  CLOSE EXPIRING POSITIONS (--close)
 # ═══════════════════════════════════════════════════════════════
 
-def close_expiring_positions(ib, acct):
+def close_expiring_positions(ib: IB, acct: str) -> None:
     """Close positions where front expiry is within CLOSE_DAYS."""
-    print("\n" + "=" * 60)
-    print("CLOSING EXPIRING POSITIONS")
-    print("=" * 60)
+    log.info("=" * 60)
+    log.info("CLOSING EXPIRING POSITIONS")
+    log.info("=" * 60)
 
     portfolio = load_portfolio()
     active = [p for p in portfolio["positions"] if "exit_date" not in p]
@@ -1064,38 +856,42 @@ def close_expiring_positions(ib, acct):
             to_close.append(pos)
 
     if not to_close:
-        print(f"  No positions to close (next expiry not within {CLOSE_DAYS} days)")
+        log.info("  No positions to close (next expiry not within %d days)", CLOSE_DAYS)
         for pos in active:
             front_exp = pd.Timestamp(pos["front_exp"])
             days_left = (front_exp - pd.Timestamp(today)).days
-            print(f"    {pos['ticker']} {pos['combo']}: "
-                  f"front exp {pos['front_exp']} ({days_left}d)")
+            log.info("    %s %s: front exp %s (%dd)",
+                     pos['ticker'], pos['combo'], pos['front_exp'], days_left)
         return
 
-    print(f"  Positions to close: {len(to_close)}")
+    log.info("  Positions to close: %d", len(to_close))
 
     # ── Time-of-day check for closing ──
     is_optimal, time_msg = check_optimal_window()
-    print(f"  {time_msg}")
+    log.info("  %s", time_msg)
     if ENFORCE_WINDOW and not is_optimal:
-        print(f"  Close orders blocked — retry between {OPTIMAL_START_ET}-{OPTIMAL_END_ET} ET.")
+        log.warning("  Close orders blocked -- retry between %s-%s ET.",
+                    OPTIMAL_START_ET, OPTIMAL_END_ET)
         return
 
     for pos in to_close:
         ticker = pos["ticker"]
         contracts = pos["contracts"]
-        print(f"\n  Closing {ticker} {pos['combo']} K={pos['strike']:.0f} "
-              f"x{contracts} ({pos['spread_type']})")
+        pos_put_strike = pos.get("put_strike", pos["strike"])
+        log.info("  Closing %s %s CallK=%.0f PutK=%.0f x%d (%s)",
+                 ticker, pos['combo'], pos['strike'],
+                 pos_put_strike, contracts, pos['spread_type'])
 
-        # Rebuild individual leg contracts
+        # Rebuild individual leg contracts (separate call/put strikes)
         is_double = pos["spread_type"] == "double"
-        legs, n_legs, _ = create_calendar_legs(
+        legs, n_legs, _, _ = create_calendar_legs(
             ib, ticker, pos["strike"],
             pos["front_exp"], pos["back_exp"],
-            double=is_double
+            double=is_double,
+            put_strike=pos_put_strike
         )
         if not legs:
-            print(f"    ERROR: could not rebuild contract, manual close needed")
+            log.error("    Could not rebuild contract, manual close needed")
             continue
 
         # Close = reverse the entry actions (BUY->SELL, SELL->BUY)
@@ -1106,7 +902,7 @@ def close_expiring_positions(ib, acct):
             close_legs.append((leg_contract, close_action))
 
         # Try combo close first, then fallback to individual legs
-        print(f"    Closing {n_legs} legs (combo-first, legs-fallback):")
+        log.info("    Closing %d legs (combo-first, legs-fallback):", n_legs)
         total_exit_price = 0.0
         close_success = False
 
@@ -1115,7 +911,7 @@ def close_expiring_positions(ib, acct):
         if combo is not None:
             bid, ask, mid = get_combo_mid_price(ib, combo)
             if mid > 0:
-                print(f"      Combo close: bid={bid:.2f} ask={ask:.2f} mid={mid:.2f}")
+                log.info("      Combo close: bid=%.2f ask=%.2f mid=%.2f", bid, ask, mid)
                 limit_price = round(mid, 2)
                 order = LimitOrder("SELL", contracts, limit_price)
                 order.outsideRth = False
@@ -1126,14 +922,14 @@ def close_expiring_positions(ib, acct):
                     if trade.orderStatus.status == "Filled":
                         total_exit_price = trade.orderStatus.avgFillPrice
                         close_success = True
-                        print(f"      Combo close FILLED @ ${total_exit_price:.2f}")
+                        log.info("      Combo close FILLED @ $%.2f", total_exit_price)
                         break
                     elif trade.orderStatus.status in ("Cancelled", "ApiCancelled", "Inactive"):
                         break
                 if not close_success:
                     ib.cancelOrder(order)
                     ib.sleep(2)
-                    print(f"      Combo close failed, fallback to legs")
+                    log.info("      Combo close failed, fallback to legs")
 
         # Step B: Individual legs fallback
         if not close_success:
@@ -1161,16 +957,16 @@ def close_expiring_positions(ib, acct):
             ret_pct = (exit_price - pos["cost_per_share"]) / pos["cost_per_share"] \
                       if pos["cost_per_share"] != 0 else 0
 
-            print(f"    CLOSED net=${exit_price:.2f}/sh, "
-                  f"P&L=${pnl:+,.2f} ({ret_pct:+.1%})")
+            log.info("    CLOSED net=$%.2f/sh, P&L=$%+,.2f (%+.1f%%)",
+                     exit_price, pnl, ret_pct * 100)
 
             pos["exit_date"] = today.strftime("%Y-%m-%d")
             pos["exit_price"] = exit_price
             pos["pnl"] = round(pnl, 2)
             record_trade(pos, exit_price, pnl, ret_pct)
         else:
-            print(f"    PARTIAL CLOSE: {len(filled_legs)}/{n_legs} legs.")
-            print(f"    Manual cleanup needed for remaining legs.")
+            log.warning("    PARTIAL CLOSE: %d/%d legs.", len(filled_legs), n_legs)
+            log.warning("    Manual cleanup needed for remaining legs.")
 
     save_portfolio(portfolio)
 
@@ -1179,69 +975,69 @@ def close_expiring_positions(ib, acct):
 #  STATUS DISPLAY
 # ═══════════════════════════════════════════════════════════════
 
-def show_basic_status(ib, acct):
+def show_basic_status(ib: IB, acct: str) -> None:
     """Show portfolio overview."""
-    print("\n" + "=" * 60)
-    print("PORTFOLIO STATUS")
-    print("=" * 60)
+    log.info("=" * 60)
+    log.info("PORTFOLIO STATUS")
+    log.info("=" * 60)
 
     info = get_account_info(ib, acct)
     ccy = info.get("base_currency", "USD")
-    print(f"  Account:         {acct} ({ccy})")
-    print(f"  Net Liquidation: {info.get('NetLiquidation', 0):>12,.2f} {ccy}")
-    print(f"  Buying Power:    {info.get('BuyingPower', 0):>12,.2f} {ccy}")
-    print(f"  Cash:            {info.get('TotalCashValue', 0):>12,.2f} {ccy}")
-    print(f"  Gross Position:  {info.get('GrossPositionValue', 0):>12,.2f} {ccy}")
+    log.info("  Account:         %s (%s)", acct, ccy)
+    log.info("  Net Liquidation: %12,.2f %s", info.get('NetLiquidation', 0), ccy)
+    log.info("  Buying Power:    %12,.2f %s", info.get('BuyingPower', 0), ccy)
+    log.info("  Cash:            %12,.2f %s", info.get('TotalCashValue', 0), ccy)
+    log.info("  Gross Position:  %12,.2f %s", info.get('GrossPositionValue', 0), ccy)
 
     portfolio = load_portfolio()
     active = [p for p in portfolio["positions"] if "exit_date" not in p]
     closed = [p for p in portfolio["positions"] if "exit_date" in p]
 
-    print(f"\n  Active positions: {len(active)}/{MAX_POSITIONS}")
+    log.info("  Active positions: %d/%d", len(active), MAX_POSITIONS)
 
     if active:
         total_deployed = sum(p["total_deployed"] for p in active)
         avg_ff = np.mean([p["ff"] for p in active])
-        print(f"  Total deployed:   ${total_deployed:>12,.2f}")
-        print(f"  Avg FF:           {avg_ff:>11.1f}%")
+        log.info("  Total deployed:   $%12,.2f", total_deployed)
+        log.info("  Avg FF:           %11.1f%%", avg_ff)
 
-        print(f"\n  {'Ticker':>6s}  {'Combo':>5s}  {'K':>6s}  {'Type':>6s}  "
-              f"{'Ctr':>3s}  {'Cost':>7s}  {'Deployed':>9s}  {'FF':>5s}  "
-              f"{'FrontExp':>10s}  {'Entry':>10s}")
-        print("  " + "-" * 85)
+        log.info("  %6s  %5s  %6s  %6s  %6s  %3s  %7s  %9s  %5s  %10s  %10s",
+                 "Ticker", "Combo", "CallK", "PutK", "Type",
+                 "Ctr", "Cost", "Deployed", "FF", "FrontExp", "Entry")
+        log.info("  %s", "-" * 95)
 
         for p in sorted(active, key=lambda x: -x["ff"]):
-            print(f"  {p['ticker']:>6s}  {p['combo']:>5s}  "
-                  f"${p['strike']:>5.0f}  {p['spread_type']:>6s}  "
-                  f"{p['contracts']:>3d}  ${p['cost_per_share']:>6.2f}  "
-                  f"${p['total_deployed']:>8.2f}  {p['ff']:>4.1f}%  "
-                  f"{p['front_exp']:>10s}  {p['entry_date']:>10s}")
+            ps = p.get("put_strike", p["strike"])
+            log.info("  %6s  %5s  $%5.0f  $%5.0f  %6s  %3d  $%6.2f  $%8.2f  %4.1f%%  %10s  %10s",
+                     p['ticker'], p['combo'], p['strike'], ps,
+                     p['spread_type'], p['contracts'], p['cost_per_share'],
+                     p['total_deployed'], p['ff'], p['front_exp'], p['entry_date'])
 
     if closed:
         total_pnl = sum(p.get("pnl", 0) for p in closed)
         n_wins = sum(1 for p in closed if p.get("pnl", 0) > 0)
         wr = n_wins / len(closed) * 100 if closed else 0
-        print(f"\n  Closed trades: {len(closed)}")
-        print(f"  Total P&L:     ${total_pnl:>+12,.2f}")
-        print(f"  Win rate:      {wr:>11.1f}%")
+        log.info("  Closed trades: %d", len(closed))
+        log.info("  Total P&L:     $%+12,.2f", total_pnl)
+        log.info("  Win rate:      %11.1f%%", wr)
 
 
-def show_detailed_status(ib, acct):
+def show_detailed_status(ib: IB, acct: str) -> None:
     """Show detailed status with live P&L from IBKR."""
     show_basic_status(ib, acct)
 
     # Show IBKR portfolio items
     items = ib.portfolio(acct)
     if items:
-        print(f"\n  IBKR Live Positions:")
-        print(f"  {'Symbol':>8s}  {'SecType':>7s}  {'Pos':>5s}  "
-              f"{'MktPrice':>9s}  {'MktValue':>10s}  {'UnrlzPnL':>10s}")
-        print("  " + "-" * 65)
+        log.info("  IBKR Live Positions:")
+        log.info("  %8s  %7s  %5s  %9s  %10s  %10s",
+                 "Symbol", "SecType", "Pos", "MktPrice", "MktValue", "UnrlzPnL")
+        log.info("  %s", "-" * 65)
         for item in items:
             c = item.contract
-            print(f"  {c.symbol:>8s}  {c.secType:>7s}  {item.position:>5.0f}  "
-                  f"${item.marketPrice:>8.2f}  ${item.marketValue:>9.2f}  "
-                  f"${item.unrealizedPNL:>9.2f}")
+            log.info("  %8s  %7s  %5.0f  $%8.2f  $%9.2f  $%9.2f",
+                     c.symbol, c.secType, item.position,
+                     item.marketPrice, item.marketValue, item.unrealizedPNL)
 
     # Trade history
     if TRADES_FILE.exists():
@@ -1249,30 +1045,31 @@ def show_detailed_status(ib, acct):
             data = json.load(f)
         trades = data.get("trades", [])
         if trades:
-            print(f"\n  Trade History (last 10):")
-            print(f"  {'Ticker':>6s}  {'Combo':>5s}  {'Entry':>10s}  {'Exit':>10s}  "
-                  f"{'Ctr':>3s}  {'P&L':>9s}  {'Ret%':>7s}  {'FF':>5s}")
-            print("  " + "-" * 70)
+            log.info("  Trade History (last 10):")
+            log.info("  %6s  %5s  %10s  %10s  %3s  %9s  %7s  %5s",
+                     "Ticker", "Combo", "Entry", "Exit", "Ctr", "P&L", "Ret%", "FF")
+            log.info("  %s", "-" * 70)
             for t in trades[-10:]:
-                print(f"  {t['ticker']:>6s}  {t['combo']:>5s}  "
-                      f"{t['entry_date']:>10s}  {t['exit_date']:>10s}  "
-                      f"{t['contracts']:>3d}  ${t['pnl']:>+8.2f}  "
-                      f"{t['return_pct']:>+6.1%}  {t['ff']:>4.1f}%")
+                log.info("  %6s  %5s  %10s  %10s  %3d  $%+8.2f  %+6.1f%%  %4.1f%%",
+                         t['ticker'], t['combo'],
+                         t['entry_date'], t['exit_date'],
+                         t['contracts'], t['pnl'],
+                         t['return_pct'] * 100, t['ff'])
 
 
 # ═══════════════════════════════════════════════════════════════
 #  SYNC PORTFOLIO WITH IBKR (--sync)
 # ═══════════════════════════════════════════════════════════════
 
-def sync_portfolio(ib, acct):
+def sync_portfolio(ib: IB, acct: str) -> None:
     """Reconcile portfolio.json with actual IBKR positions.
 
     - Removes positions not on IBKR (orders that were rejected/cancelled)
     - Updates cost with actual fill prices
     """
-    print("\n" + "=" * 60)
-    print("SYNCING PORTFOLIO WITH IBKR")
-    print("=" * 60)
+    log.info("=" * 60)
+    log.info("SYNCING PORTFOLIO WITH IBKR")
+    log.info("=" * 60)
 
     portfolio = load_portfolio()
     positions = ib.positions()
@@ -1291,8 +1088,8 @@ def sync_portfolio(ib, acct):
         else:
             ibkr_tickers[sym]["credit"] += abs(p.position) * p.avgCost
 
-    print(f"  IBKR positions: {len(ibkr_tickers)} tickers")
-    print(f"  Portfolio file: {len(portfolio['positions'])} entries")
+    log.info("  IBKR positions: %d tickers", len(ibkr_tickers))
+    log.info("  Portfolio file: %d entries", len(portfolio['positions']))
 
     # Reconcile
     kept = []
@@ -1323,24 +1120,24 @@ def sync_portfolio(ib, acct):
     save_portfolio(portfolio)
 
     if removed:
-        print(f"\n  REMOVED ({len(removed)} not on IBKR):")
+        log.info("  REMOVED (%d not on IBKR):", len(removed))
         for t in removed:
-            print(f"    {t}")
+            log.info("    %s", t)
 
     if updated:
-        print(f"\n  UPDATED ({len(updated)} cost corrections):")
+        log.info("  UPDATED (%d cost corrections):", len(updated))
         for u in updated:
-            print(f"    {u}")
+            log.info("    %s", u)
 
     total_deployed = sum(p["total_deployed"] for p in kept)
-    print(f"\n  Final: {len(kept)} positions, ${total_deployed:,.2f} deployed")
+    log.info("  Final: %d positions, $%,.2f deployed", len(kept), total_deployed)
 
 
 # ═══════════════════════════════════════════════════════════════
 #  MAIN / CLI
 # ═══════════════════════════════════════════════════════════════
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="IBKR Paper Trading — Calendar Spreads"
     )
@@ -1378,24 +1175,22 @@ def main():
             show_basic_status(ib, acct)
 
     except (ConnectionRefusedError, ConnectionError, OSError) as ex:
-        print(f"\nERROR: Cannot connect to IBKR ({type(ex).__name__}).")
-        print("Make sure TWS or IB Gateway is running with API enabled:")
-        print("  1. Open TWS or IB Gateway")
-        print("  2. Login to PAPER TRADING account")
-        print(f"  3. Enable API on port {args.port}:")
-        print("     Edit -> Global Configuration -> API -> Settings")
-        print("     [x] Enable ActiveX and Socket Clients")
-        print(f"     Socket port: {args.port}")
+        log.error("Cannot connect to IBKR (%s).", type(ex).__name__)
+        log.error("Make sure TWS or IB Gateway is running with API enabled:")
+        log.error("  1. Open TWS or IB Gateway")
+        log.error("  2. Login to PAPER TRADING account")
+        log.error("  3. Enable API on port %d:", args.port)
+        log.error("     Edit -> Global Configuration -> API -> Settings")
+        log.error("     [x] Enable ActiveX and Socket Clients")
+        log.error("     Socket port: %d", args.port)
     except KeyboardInterrupt:
-        print("\nInterrupted")
+        log.info("Interrupted")
     except Exception as ex:
-        print(f"\nERROR: {ex}")
-        import traceback
-        traceback.print_exc()
+        log.error("ERROR: %s", ex, exc_info=True)
     finally:
         if ib and ib.isConnected():
             ib.disconnect()
-            print("\nDisconnected from IBKR")
+            log.info("Disconnected from IBKR")
 
 
 if __name__ == "__main__":

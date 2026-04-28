@@ -2,14 +2,15 @@
 Backtest Artifact Diagnostics
 Check for biases and artifacts in the backtest.
 """
+import sys
 import numpy as np
 import pandas as pd
 import pickle
 from pathlib import Path
 from collections import Counter
 
-ROOT  = Path(r"C:\Users\ANTEC MSI\Desktop\pro\Option trading")
-CACHE = ROOT / "cache"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.config import CACHE
 
 # ── Load data (aligned with PDF: FF in OLD formula) ──
 df = pd.read_pickle(str(CACHE / "spread_returns.pkl"))

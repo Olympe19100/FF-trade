@@ -17,12 +17,8 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy import stats as sp_stats
 
-from core.trader import load_trade_history
-
-ROOT   = Path(r"C:\Users\ANTEC MSI\Desktop\pro\Option trading")
-OUTPUT = ROOT / "output"
-CACHE  = ROOT / "cache"
-CACHE.mkdir(exist_ok=True)
+from core.config import OUTPUT, CACHE
+from core.portfolio import load_trade_history
 
 TRADES_PER_YEAR = 35  # ~347 trades over 10 years
 

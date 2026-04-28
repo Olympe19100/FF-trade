@@ -2,13 +2,14 @@
 Regime analysis: performance vs market conditions
 Check if strategy decay is real or just regime-dependent.
 """
+import sys
 import numpy as np
 import pandas as pd
 import pickle
 from pathlib import Path
 
-ROOT  = Path(r"C:\Users\ANTEC MSI\Desktop\pro\Option trading")
-CACHE = ROOT / "cache"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.config import CACHE
 
 # Load prices
 with open(CACHE / "bt_prices.pkl", "rb") as f:
