@@ -1,0 +1,11 @@
+[04-28-2026 02:19:13] INFO: Theta Bootstrap: 20250709:85346bb
+[04-28-2026 02:19:15.844] INFO: Theta Terminal: 20260422:03b2cff
+[04-28-2026 02:19:15.847] INFO: Configuration file: C:\Users\ANTEC MSI\Desktop\pro\Option trading\config.toml
+[04-28-2026 02:19:15.848] INFO: Log directory: C:\tmp
+[04-28-2026 02:19:16.719] INFO: Subscriptions: Stock: FREE Options: STANDARD Index: FREE Rate: FREE
+[04-28-2026 02:19:17.002] ERROR: [FPSS] Failed to start server at 0.0.0.0:25520. Address already in use. Is another instance of the terminal already running?
+[04-28-2026 02:19:17.504] INFO: [FPSS] Attempting login as contact@olympemanagement.com
+[04-28-2026 02:19:17.648] INFO: [FPSS] CONNECTED: [nj-a.thetadata.us:20000], Bundle: STOCK.FREE, OPTION.STANDARD, INDEX.FREE
+[04-28-2026 02:19:18.123] INFO: Max concurrent requests: 4
+[04-28-2026 02:19:18.299] ERROR: Failed to start Theta Terminal server. Address 0.0.0.0:25503 already in use. Is another instance of the terminal already running?
+[04-28-2026 02:19:17.655] WARN: [FPSS] Disconnected from server: ACCOUNT_ALREADY_CONNECTED

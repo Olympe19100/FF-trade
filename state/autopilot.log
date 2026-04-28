@@ -1,0 +1,41 @@
+[2026-04-28 00:24:20] [INFO] ============================================================
+[2026-04-28 00:24:20] [INFO] AUTOPILOT - MONITOR (ThetaData)
+[2026-04-28 00:24:20] [INFO] ============================================================
+[2026-04-28 00:24:20] [INFO] MONITOR: Pricing 1 active positions via ThetaData
+[2026-04-28 00:24:22] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
+[2026-04-28 00:24:30] [WARNING] MONITOR: Cannot match call legs for CTAS K=200.0 2026-05-15/2026-06-18
+[2026-04-28 00:24:37] [WARNING] MONITOR: Cannot match call legs for NOC K=755.0 2026-05-15/2026-06-18
+[2026-04-28 00:24:40] [WARNING] MONITOR: Cannot match call legs for HCA K=535.0 2026-05-15/2026-06-18
+[2026-04-28 00:38:02] [INFO] ============================================================
+[2026-04-28 00:38:02] [INFO] AUTOPILOT - MONITOR (ThetaData)
+[2026-04-28 00:38:02] [INFO] ============================================================
+[2026-04-28 00:38:02] [INFO] MONITOR: Pricing 1 active positions via ThetaData
+[2026-04-28 00:38:05] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
+[2026-04-28 00:38:08] [WARNING] MONITOR: Cannot match call legs for CTAS K=200.0 2026-05-15/2026-06-18
+[2026-04-28 00:38:10] [INFO] ============================================================
+[2026-04-28 00:38:10] [INFO] AUTOPILOT - MONITOR (ThetaData)
+[2026-04-28 00:38:10] [INFO] ============================================================
+[2026-04-28 00:38:10] [INFO] MONITOR: Pricing 1 active positions via ThetaData
+[2026-04-28 00:38:11] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
+[2026-04-28 00:38:15] [WARNING] MONITOR: Cannot match call legs for NOC K=755.0 2026-05-15/2026-06-18
+[2026-04-28 00:38:17] [WARNING] MONITOR: Cannot match call legs for HCA K=535.0 2026-05-15/2026-06-18
+[2026-04-28 09:01:40] [INFO] ============================================================
+[2026-04-28 09:01:40] [INFO] AUTOPILOT - MONITOR (ThetaData)
+[2026-04-28 09:01:40] [INFO] ============================================================
+[2026-04-28 09:01:40] [INFO] MONITOR: Pricing 20 active positions via ThetaData
+[2026-04-28 09:02:02] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
+[2026-04-28 09:06:13] [INFO] ============================================================
+[2026-04-28 09:06:13] [INFO] AUTOPILOT - MONITOR (ThetaData)
+[2026-04-28 09:06:13] [INFO] ============================================================
+[2026-04-28 09:06:13] [INFO] MONITOR: Pricing 20 active positions via ThetaData
+[2026-04-28 09:06:34] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
+[2026-04-28 09:40:45] [INFO] ============================================================
+[2026-04-28 09:40:45] [INFO] AUTOPILOT - MONITOR (ThetaData)
+[2026-04-28 09:40:45] [INFO] ============================================================
+[2026-04-28 09:40:45] [INFO] MONITOR: Pricing 20 active positions via ThetaData
+[2026-04-28 09:41:06] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
+[2026-04-28 12:59:43] [INFO] ============================================================
+[2026-04-28 12:59:43] [INFO] AUTOPILOT - MONITOR (ThetaData)
+[2026-04-28 12:59:43] [INFO] ============================================================
+[2026-04-28 12:59:43] [INFO] MONITOR: Pricing 20 active positions via ThetaData
+[2026-04-28 13:00:14] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json

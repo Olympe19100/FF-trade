@@ -1,0 +1,20 @@
+{
+  "date": "2026-04-25",
+  "positions": [
+    {
+      "ticker": "INTC",
+      "combo": "30-60",
+      "contracts": 10,
+      "strike": 90.0,
+      "put_strike": 78.0,
+      "entry_cost": 1.76,
+      "current_cost": 1.73,
+      "unrealized_pnl": -48.0,
+      "return_pct": -0.0199,
+      "front_dte": 33,
+      "stock_px": 82.54
+    }
+  ],
+  "errors": [],
+  "total_unrealized_pnl": -48.0
+}

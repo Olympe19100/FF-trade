@@ -1,37 +1,24 @@
-# Data
+# Large data (> 100 MB GitHub limit)
 *.db
 *.db-wal
 *.db-shm
-*.pkl
+calendar_spreads.pkl
+spread_returns.pkl
 *.zip
-
-# Secrets
-.env
-creds.txt
-config.toml
-
-# Binaries
-*.jar
-
-# Runtime
-state/
-logs/
-__pycache__/
-*.pyc
-*.pyo
-_oquants_tmp/
-
-# Output
-output/
-cache/
 
 # IDE
 .vscode/
 .idea/
 .claude/
 
+# Runtime
+logs/
+__pycache__/
+*.pyc
+*.pyo
+_oquants_tmp/
+
 # OS
 nul
-*.png
 Thumbs.db
 .DS_Store

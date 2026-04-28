@@ -1,0 +1,2 @@
+ticker,combo,strike,put_strike,stock_px,front_exp,front_dte,front_iv,back_exp,back_dte,back_iv,ff,call_cost,put_cost,dbl_cost,call_delta,put_delta,front_oi,back_oi
+INTC,30-60,90.0,78.0,82.54,2026-05-29,33,73.4,2026-06-18,53,71.6,0.0707,1.73,,,0.395,0.351,206,9762

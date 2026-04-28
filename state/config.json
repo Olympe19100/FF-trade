@@ -1,0 +1,22 @@
+{
+    "email": {
+        "enabled": false,
+        "smtp_server": "smtp.gmail.com",
+        "smtp_port": 465,
+        "sender": "your_email@gmail.com",
+        "password": "xxxx xxxx xxxx xxxx",
+        "recipient": "your_email@gmail.com"
+    },
+    "ibkr": {
+        "host": "127.0.0.1",
+        "port": 4002,
+        "client_id": 60
+    },
+    "strategy": {
+        "max_positions": 20,
+        "max_contracts": 10,
+        "ff_threshold": 0.20,
+        "dry_run": false,
+        "paper_account": 100000
+    }
+}

@@ -1,0 +1,2 @@
+ticker,combo,strike,put_strike,stock_px,front_exp,front_dte,front_iv,back_exp,back_dte,back_iv,ff,call_cost,put_cost,dbl_cost,call_delta,put_delta,front_oi,back_oi
+ABBV,51-80,210.0,190.0,198.71,2026-06-18,51,32.3,2026-07-17,80,31.4,0.0847,1.78,1.97,3.75,0.363,0.325,1638,121

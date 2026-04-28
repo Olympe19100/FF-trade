@@ -1,0 +1,109 @@
+[2026-04-25 16:49:12] [INFO] Autopilot started — scan=False trade=False report=True full=False dry_run=False
+[2026-04-25 16:49:12] [INFO] ============================================================
+[2026-04-25 16:49:12] [INFO] AUTOPILOT — REPORT
+[2026-04-25 16:49:12] [INFO] ============================================================
+[2026-04-25 16:49:12] [INFO] Report generated (473 chars)
+[2026-04-25 16:49:12] [INFO] Email disabled in config, skipping
+[2026-04-25 16:49:12] [INFO] Autopilot finished
+[2026-04-25 16:49:52] [INFO] Autopilot started --scan=False trade=False report=True full=False dry_run=False
+[2026-04-25 16:49:52] [INFO] ============================================================
+[2026-04-25 16:49:52] [INFO] AUTOPILOT --REPORT
+[2026-04-25 16:49:52] [INFO] ============================================================
+[2026-04-25 16:49:52] [INFO] Report generated (473 chars)
+[2026-04-25 16:49:52] [INFO] Email disabled in config, skipping
+[2026-04-25 16:49:52] [INFO] Autopilot finished
+[2026-04-25 16:51:09] [INFO] Autopilot started -scan=False trade=False report=True full=False dry_run=False
+[2026-04-25 16:51:09] [INFO] ============================================================
+[2026-04-25 16:51:09] [INFO] AUTOPILOT - REPORT
+[2026-04-25 16:51:09] [INFO] ============================================================
+[2026-04-25 16:51:09] [INFO] Report generated (473 chars)
+[2026-04-25 16:51:09] [INFO] Email disabled in config, skipping
+[2026-04-25 16:51:09] [INFO] Autopilot finished
+[2026-04-25 16:51:11] [INFO] Autopilot started -scan=False trade=True report=False full=False dry_run=True
+[2026-04-25 16:51:11] [INFO] ============================================================
+[2026-04-25 16:51:11] [INFO] AUTOPILOT - TRADE (DRY RUN)
+[2026-04-25 16:51:11] [INFO] ============================================================
+[2026-04-25 16:51:11] [INFO] DRY RUN: simulating trade flow without IBKR
+[2026-04-25 16:51:11] [INFO] DRY RUN: Would enter INTC 30-60 FF=0.071 $1.73
+[2026-04-25 16:51:11] [INFO] Autopilot finished
+[2026-04-25 17:08:30] [INFO] Autopilot started -scan=False trade=False monitor=True report=False full=False dry_run=False
+[2026-04-25 17:08:30] [INFO] ============================================================
+[2026-04-25 17:08:30] [INFO] AUTOPILOT - MONITOR (EODHD)
+[2026-04-25 17:08:30] [INFO] ============================================================
+[2026-04-25 17:08:30] [INFO] MONITOR: No active positions
+[2026-04-25 17:08:30] [INFO] Autopilot finished
+[2026-04-25 17:08:35] [INFO] Autopilot started -scan=False trade=False monitor=False report=True full=False dry_run=False
+[2026-04-25 17:08:35] [INFO] ============================================================
+[2026-04-25 17:08:35] [INFO] AUTOPILOT - REPORT
+[2026-04-25 17:08:35] [INFO] ============================================================
+[2026-04-25 17:08:35] [INFO] Report generated (473 chars)
+[2026-04-25 17:08:35] [INFO] Email disabled in config, skipping
+[2026-04-25 17:08:35] [INFO] Autopilot finished
+[2026-04-25 17:11:44] [WARNING] MONITOR: Cannot match call legs for CTAS K=200.0 2026-05-15/2026-06-18
+[2026-04-25 17:11:49] [WARNING] MONITOR: Cannot match call legs for NOC K=755.0 2026-05-15/2026-06-18
+[2026-04-25 17:11:51] [WARNING] MONITOR: Cannot match call legs for HCA K=535.0 2026-05-15/2026-06-18
+[2026-04-25 17:39:27] [WARNING] MONITOR: Cannot match call legs for CTAS K=200.0 2026-05-15/2026-06-18
+[2026-04-25 17:39:33] [WARNING] MONITOR: Cannot match call legs for NOC K=755.0 2026-05-15/2026-06-18
+[2026-04-25 17:39:35] [WARNING] MONITOR: Cannot match call legs for HCA K=535.0 2026-05-15/2026-06-18
+[2026-04-25 18:03:58] [INFO] Autopilot started - scan=False trade=False paper=True daemon=False monitor=False report=False full=False dry_run=False
+[2026-04-25 18:03:58] [INFO] ============================================================
+[2026-04-25 18:03:58] [INFO] AUTOPILOT - SCAN
+[2026-04-25 18:03:58] [INFO] ============================================================
+[2026-04-25 18:04:37] [INFO] SCAN: Found 1 signals (top 5: INTC)
+[2026-04-25 18:04:37] [DEBUG]   INTC 30-60 FF=0.071 dbl=$None
+[2026-04-25 18:04:37] [INFO] ============================================================
+[2026-04-25 18:04:37] [INFO] AUTOPILOT - PAPER TRADE (EODHD, no IBKR)
+[2026-04-25 18:04:37] [INFO] ============================================================
+[2026-04-25 18:04:37] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 1)
+[2026-04-25 18:04:37] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-04-25 18:04:37] [INFO]   Paper account: $100,000
+[2026-04-25 18:04:37] [INFO]   Realized P&L:  $+0
+[2026-04-25 18:04:37] [INFO]   Deployed:      $0
+[2026-04-25 18:04:37] [INFO]   Available:     $100,000
+[2026-04-25 18:04:37] [INFO]   Kelly f:       0.0412 (4.1%)
+[2026-04-25 18:04:37] [INFO]   Slots:         20
+[2026-04-25 18:04:37] [INFO]   ENTERED INTC 30-60 FF=0.071 10x @ $1.76/sh (single)
+[2026-04-25 18:04:37] [INFO] PAPER complete: 0 closed, 1 entered
+[2026-04-25 18:04:37] [INFO] ============================================================
+[2026-04-25 18:04:37] [INFO] AUTOPILOT - MONITOR (EODHD)
+[2026-04-25 18:04:37] [INFO] ============================================================
+[2026-04-25 18:04:37] [INFO] MONITOR: Pricing 1 active positions via EODHD
+[2026-04-25 18:04:38] [ERROR] Autopilot fatal error: [Errno 22] Invalid argument
+Traceback (most recent call last):
+  File "C:\Users\ANTEC MSI\Desktop\pro\Option trading\core\autopilot.py", line 1042, in main
+    monitor_data = run_monitor()
+  File "C:\Users\ANTEC MSI\Desktop\pro\Option trading\core\autopilot.py", line 635, in run_monitor
+    print(f"\n{'='*75}")
+    ~~~~~^^^^^^^^^^^^^^^
+OSError: [Errno 22] Invalid argument
+[2026-04-25 18:04:38] [INFO] Email disabled in config, skipping
+[2026-04-25 18:04:46] [INFO] Autopilot started - scan=False trade=False paper=True daemon=False monitor=False report=False full=False dry_run=False
+[2026-04-25 18:04:46] [INFO] ============================================================
+[2026-04-25 18:04:46] [INFO] AUTOPILOT - SCAN
+[2026-04-25 18:04:46] [INFO] ============================================================
+[2026-04-25 18:05:25] [INFO] SCAN: Found 1 signals (top 5: INTC)
+[2026-04-25 18:05:25] [DEBUG]   INTC 30-60 FF=0.071 dbl=$None
+[2026-04-25 18:05:25] [INFO] ============================================================
+[2026-04-25 18:05:25] [INFO] AUTOPILOT - PAPER TRADE (EODHD, no IBKR)
+[2026-04-25 18:05:25] [INFO] ============================================================
+[2026-04-25 18:05:25] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 1)
+[2026-04-25 18:05:25] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-04-25 18:05:25] [INFO]   Paper account: $100,000
+[2026-04-25 18:05:25] [INFO]   Realized P&L:  $+0
+[2026-04-25 18:05:25] [INFO]   Deployed:      $1,773
+[2026-04-25 18:05:25] [INFO]   Available:     $98,227
+[2026-04-25 18:05:25] [INFO]   Kelly f:       0.0412 (4.1%)
+[2026-04-25 18:05:25] [INFO]   Slots:         19
+[2026-04-25 18:05:25] [INFO]   No valid candidates after filtering
+[2026-04-25 18:05:25] [INFO] PAPER complete: 0 closed, 0 entered
+[2026-04-25 18:05:25] [INFO] ============================================================
+[2026-04-25 18:05:25] [INFO] AUTOPILOT - MONITOR (EODHD)
+[2026-04-25 18:05:25] [INFO] ============================================================
+[2026-04-25 18:05:25] [INFO] MONITOR: Pricing 1 active positions via EODHD
+[2026-04-25 18:05:26] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260425.json
+[2026-04-25 18:05:26] [INFO] ============================================================
+[2026-04-25 18:05:26] [INFO] AUTOPILOT - REPORT
+[2026-04-25 18:05:26] [INFO] ============================================================
+[2026-04-25 18:05:26] [INFO] Report generated (890 chars)
+[2026-04-25 18:05:26] [INFO] Email disabled in config, skipping
+[2026-04-25 18:05:26] [INFO] Autopilot finished
