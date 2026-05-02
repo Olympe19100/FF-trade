@@ -8,6 +8,7 @@ Single command: python app.py -> opens browser at http://localhost:8000
 import asyncio
 import threading
 import webbrowser
+from contextlib import asynccontextmanager
 
 # Fix Python 3.14 asyncio before importing ib_insync
 try:
@@ -27,8 +28,18 @@ from api.routes_trading import router as trading_router
 from api.routes_analytics import router as analytics_router
 from api.routes_monitor import router as monitor_router
 from api.routes_scanner import router as scanner_router
+from core.autopilot import daemon
+from api.ibkr_worker import ib_state
 
-app = FastAPI(title="Calendar Spread Trading")
+
+@asynccontextmanager
+async def lifespan(app):
+    """Daemon starts only when user confirms via the UI modal."""
+    yield
+    daemon.stop()
+
+
+app = FastAPI(title="Calendar Spread Trading", lifespan=lifespan)
 
 # Mount routers
 app.include_router(trading_router)

@@ -248,6 +248,126 @@ def record_trade(
 #  CACHED MONITOR PRICES & P&L HISTORY
 # ═══════════════════════════════════════════════════════════════
 
+def ibkr_portfolio_to_positions(
+    ibkr_items: list[dict],
+    portfolio_positions: list[dict],
+) -> tuple[list[dict], list[str]]:
+    """Convert raw ib.portfolio() items to monitor position dicts.
+
+    Groups IBKR portfolio items (options) by ticker, matches with active
+    positions from portfolio.json, and computes P&L from IBKR marketValue
+    and unrealizedPNL.
+
+    Args:
+        ibkr_items: list of dicts from ib.portfolio(), each with:
+            contract (symbol, secType, strike, right, lastTradeDateOrContractMonth),
+            position, marketPrice, marketValue, averageCost, unrealizedPNL
+        portfolio_positions: active positions from portfolio.json
+
+    Returns:
+        (positions_list, errors_list) — same JSON shape as _price_position()
+    """
+    from datetime import datetime
+
+    # 1. Index all IBKR items by a unique contract key for fast lookup
+    # Key: (symbol, strike, right, expiration_YYYYMMDD)
+    ibkr_map = {}
+    for item in ibkr_items:
+        if hasattr(item, "contract"):
+            c = item.contract
+            key = (c.symbol, float(c.strike), c.right, c.lastTradeDateOrContractMonth)
+        elif isinstance(item, dict):
+            c = item.get("contract", item)
+            key = (c.get("symbol"), float(c.get("strike", 0)), c.get("right"), c.get("lastTradeDateOrContractMonth"))
+        else:
+            continue
+        ibkr_map[key] = item
+
+    positions = []
+    errors = []
+
+    for pos in portfolio_positions:
+        ticker = pos["ticker"]
+        strike = float(pos["strike"])
+        put_strike = float(pos.get("put_strike", strike))
+        right = pos.get("right", "C") # Fallback for single legs
+        f_exp = pos["front_exp"].replace("-", "")
+        b_exp = pos["back_exp"].replace("-", "")
+
+        # Identify the legs for this specific position
+        legs_found = []
+        
+        # Standard 2-leg or 4-leg (double) logic
+        # For a double (straddle calendar), we have 2 calls and 2 puts
+        if pos.get("spread_type") == "double":
+            # Call legs
+            k_c_f = (ticker, strike, "C", f_exp)
+            k_c_b = (ticker, strike, "C", b_exp)
+            # Put legs
+            k_p_f = (ticker, put_strike, "P", f_exp)
+            k_p_b = (ticker, put_strike, "P", b_exp)
+            
+            for k in [k_c_f, k_c_b, k_p_f, k_p_b]:
+                if k in ibkr_map:
+                    legs_found.append(ibkr_map[k])
+        else:
+            # Single leg (calendar call or put)
+            k_f = (ticker, strike, right, f_exp)
+            k_b = (ticker, strike, right, b_exp)
+            for k in [k_f, k_b]:
+                if k in ibkr_map:
+                    legs_found.append(ibkr_map[k])
+
+        if not legs_found:
+            errors.append(ticker)
+            continue
+
+        # Sum marketValue and unrealizedPNL ONLY for these matched legs
+        total_market_value = 0.0
+        total_unrealized_pnl = 0.0
+        for item in legs_found:
+            if isinstance(item, dict):
+                total_market_value += item.get("marketValue", 0) or 0
+                total_unrealized_pnl += item.get("unrealizedPNL", 0) or 0
+            else:
+                total_market_value += getattr(item, "marketValue", 0) or 0
+                total_unrealized_pnl += getattr(item, "unrealizedPNL", 0) or 0
+
+        contracts = pos["contracts"]
+        entry_cost = pos["cost_per_share"]
+        deployed = pos.get("total_deployed", entry_cost * CONTRACT_MULT * contracts)
+
+        # current_cost = total market value per share
+        divisor = contracts * CONTRACT_MULT
+        current_cost = total_market_value / divisor if divisor > 0 else 0
+
+        return_pct = total_unrealized_pnl / deployed if deployed > 0 else 0
+
+        # Front DTE
+        try:
+            front_dt = datetime.strptime(pos["front_exp"], "%Y-%m-%d")
+            front_dte = (front_dt - datetime.now()).days
+        except (ValueError, KeyError):
+            front_dte = -1
+
+        positions.append({
+            "ticker": ticker,
+            "combo": pos.get("combo", ""),
+            "contracts": contracts,
+            "strike": strike,
+            "put_strike": put_strike,
+            "entry_cost": round(entry_cost, 2),
+            "current_cost": round(current_cost, 2),
+            "unrealized_pnl": round(total_unrealized_pnl, 2),
+            "return_pct": round(return_pct, 4),
+            "front_dte": front_dte,
+            "stock_px": 0,
+            "source": "ibkr",
+        })
+
+    return positions, errors
+
+
 def load_cached_monitor_prices() -> tuple[dict, str | None]:
     """Load the latest monitor_*.json snapshot (not sim_*).
 

@@ -2,10 +2,10 @@
 Autopilot -- FF Double Calendar Spread Strategy Orchestrator
 
 Automates the daily workflow: scan -> trade -> monitor -> report via email.
-Uses ThetaData (real-time via local Theta Terminal) with EODHD fallback.
+Uses ThetaData (real-time via local Theta Terminal). EODHD only for earnings calendar.
 
 Usage:
-    python core/autopilot.py --scan          # ThetaData scan (EODHD fallback)
+    python core/autopilot.py --scan          # ThetaData scan
     python core/autopilot.py --trade         # Close J-1 + Enter new (IBKR required)
     python core/autopilot.py --paper         # Paper trade: scan -> trade -> monitor -> report (no IBKR)
     python core/autopilot.py --daemon        # Run as daemon with scheduled paper trading
@@ -27,6 +27,8 @@ import argparse
 import logging
 import smtplib
 import asyncio
+import threading
+from collections import deque
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
@@ -154,7 +156,7 @@ def send_alert(subject, body, config):
 # ═══════════════════════════════════════════════════════════════
 
 def run_scan():
-    """Run EODHD scanner, return signals DataFrame."""
+    """Run ThetaData scanner, return signals DataFrame."""
     log.info("=" * 60)
     log.info("AUTOPILOT - SCAN")
     log.info("=" * 60)
@@ -278,11 +280,11 @@ def run_trade(dry_run=False, config=None):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  PAPER TRADE — Simulate trading via EODHD pricing (no IBKR)
+#  PAPER TRADE — Simulate trading via ThetaData pricing (no IBKR)
 # ═══════════════════════════════════════════════════════════════
 
 def run_paper_trade(config=None):
-    """Close expiring + Enter new positions using EODHD prices only.
+    """Close expiring + Enter new positions using ThetaData prices.
 
     No IBKR connection needed. Uses Kelly sizing from trader.py,
     records trades in trades.json, updates portfolio.json.
@@ -479,17 +481,17 @@ def _dry_run_trade(result):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  MONITOR — Live P&L via EODHD (no IBKR needed)
+#  MONITOR — Live P&L via ThetaData (no IBKR needed)
 # ═══════════════════════════════════════════════════════════════
 
 def _price_position(pos):
-    """Price a single position using ThetaData (primary) or EODHD (fallback).
+    """Price a single position using ThetaData.
 
     Matches the 4 legs (call/put x front/back) and computes current spread cost.
     Returns dict with pricing info, or None if pricing fails.
     """
     import pandas as pd
-    from core.scanner import fetch_option_chain_thetadata, fetch_option_chain_eodhd
+    from core.scanner import fetch_option_chain_thetadata
 
     ticker = pos["ticker"]
     strike = pos["strike"]
@@ -498,14 +500,11 @@ def _price_position(pos):
     back_exp = pos["back_exp"]
     is_double = pos.get("spread_type", "double") == "double"
 
-    # ThetaData first, EODHD fallback
     stock_px, chain = 0, pd.DataFrame()
     try:
         stock_px, chain = fetch_option_chain_thetadata(ticker)
-    except Exception:
-        pass
-    if stock_px <= 0 or chain.empty:
-        stock_px, chain = fetch_option_chain_eodhd(ticker)
+    except Exception as ex:
+        log.warning("MONITOR: ThetaData failed for %s: %s", ticker, ex)
     if stock_px <= 0 or chain.empty:
         log.warning(f"MONITOR: No data for {ticker}")
         return None
@@ -568,7 +567,8 @@ def _price_position(pos):
     commission = n_legs * COMMISSION_LEG * contracts
 
     unrealized_pnl = (current_cost - entry_cost) * 100 * contracts - commission
-    return_pct = (current_cost - entry_cost) / entry_cost if entry_cost != 0 else 0
+    deployed = pos.get("total_deployed", entry_cost * 100 * contracts)
+    return_pct = unrealized_pnl / deployed if deployed > 0 else 0
 
     # Front DTE
     today = datetime.now()
@@ -593,15 +593,14 @@ def _price_position(pos):
     }
 
 
-def run_monitor():
-    """Price all active positions via ThetaData/EODHD and display live P&L.
+def run_monitor(ib=None, acct=None):
+    """Price all active positions and display live P&L.
+
+    If ib (ib_insync.IB) is provided and connected, uses IBKR portfolio data
+    for accurate P&L. Otherwise falls back to ThetaData REST pricing.
 
     Returns monitor_data dict (for build_report) or None if no positions.
     """
-    log.info("=" * 60)
-    log.info("AUTOPILOT - MONITOR (ThetaData)")
-    log.info("=" * 60)
-
     portfolio = load_json(PORTFOLIO_FILE, {"positions": []})
     active = [p for p in portfolio["positions"] if "exit_date" not in p]
 
@@ -609,21 +608,51 @@ def run_monitor():
         log.info("MONITOR: No active positions")
         return None
 
-    log.info(f"MONITOR: Pricing {len(active)} active positions via ThetaData")
-
     priced = []
     errors = []
 
-    for pos in active:
+    # Try IBKR direct if connection provided
+    use_ibkr = False
+    if ib is not None:
         try:
-            result = _price_position(pos)
-            if result:
-                priced.append(result)
-            else:
-                errors.append(pos["ticker"])
+            if ib.isConnected():
+                use_ibkr = True
+        except Exception:
+            pass
+
+    if use_ibkr:
+        log.info("=" * 60)
+        log.info("AUTOPILOT - MONITOR (IBKR)")
+        log.info("=" * 60)
+        log.info(f"MONITOR: Pricing {len(active)} active positions via IBKR")
+
+        from core.portfolio import ibkr_portfolio_to_positions
+        try:
+            items = ib.portfolio(acct)
+            ibkr_items = [item for item in items
+                          if getattr(item.contract, "secType", "") == "OPT"
+                          and item.position != 0]
+            priced, errors = ibkr_portfolio_to_positions(ibkr_items, active)
         except Exception as ex:
-            log.warning(f"MONITOR: Error pricing {pos['ticker']}: {ex}")
-            errors.append(pos["ticker"])
+            log.warning(f"MONITOR: IBKR portfolio failed: {ex}, falling back to ThetaData")
+            use_ibkr = False
+
+    if not use_ibkr:
+        log.info("=" * 60)
+        log.info("AUTOPILOT - MONITOR (ThetaData)")
+        log.info("=" * 60)
+        log.info(f"MONITOR: Pricing {len(active)} active positions via ThetaData")
+
+        for pos in active:
+            try:
+                result = _price_position(pos)
+                if result:
+                    priced.append(result)
+                else:
+                    errors.append(pos["ticker"])
+            except Exception as ex:
+                log.warning(f"MONITOR: Error pricing {pos['ticker']}: {ex}")
+                errors.append(pos["ticker"])
 
     # Display table
     if priced:
@@ -894,12 +923,236 @@ def _load_latest_signals_file():
 
 
 # ═══════════════════════════════════════════════════════════════
+#  TRADE (WEB) — Reuses existing IB connection from web app
+# ═══════════════════════════════════════════════════════════════
+
+def run_trade_web(ib, acct, config=None):
+    """Close expiring + Enter new positions using existing IB connection.
+
+    Called by the daemon when IBKR is already connected via the web app.
+    Does NOT connect/disconnect — caller manages the connection.
+    """
+    from core.trader import close_expiring_positions, enter_new_positions
+
+    config = config or {}
+    result = {"closed": [], "entered": [], "errors": []}
+
+    try:
+        # Step 1: Close expiring positions
+        log.info("TRADE_WEB Step 1: Closing expiring positions")
+        portfolio_before = load_portfolio()
+        close_expiring_positions(ib, acct)
+
+        portfolio_after = load_portfolio()
+        active_after = [p for p in portfolio_after["positions"]
+                        if "exit_date" not in p]
+        newly_closed = [p for p in portfolio_after["positions"]
+                        if "exit_date" in p and
+                        p["exit_date"] == datetime.now().strftime("%Y-%m-%d")]
+
+        for p in newly_closed:
+            info = (f"CLOSED {p['ticker']} {p['combo']} "
+                    f"{p['contracts']}cts P&L=${p.get('pnl', 0):+.2f}")
+            log.info(info)
+            result["closed"].append(p)
+
+        # Step 2: Enter new positions
+        log.info("TRADE_WEB Step 2: Entering new positions")
+        strat_cfg = config.get("strategy", {})
+        max_new = strat_cfg.get("max_positions", 20) - len(active_after)
+
+        enter_result = enter_new_positions(ib, acct, max_new=max(0, max_new))
+
+        if enter_result:
+            n_entered = enter_result.get("entered", 0)
+            log.info(f"TRADE_WEB: Entered {n_entered} new positions")
+
+            portfolio_final = load_portfolio()
+            for p in portfolio_final["positions"]:
+                if ("exit_date" not in p and
+                        p["entry_date"] == datetime.now().strftime("%Y-%m-%d")):
+                    result["entered"].append(p)
+
+        log.info(f"TRADE_WEB complete: {len(result['closed'])} closed, "
+                 f"{len(result['entered'])} entered")
+
+    except Exception as ex:
+        msg = f"TRADE_WEB error: {ex}"
+        log.error(msg, exc_info=True)
+        result["errors"].append(msg)
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════
 #  DAEMON — Scheduler loop (schedule 1.2.2)
 # ═══════════════════════════════════════════════════════════════
 
 def _is_weekday():
     """Return True if today is Mon-Fri."""
     return datetime.now().weekday() < 5
+
+
+class DaemonScheduler:
+    """Web-integrated autopilot daemon.
+
+    Runs scan/trade/monitor jobs on a daily schedule.
+    Trade job reuses the web app's IB connection (ib_state).
+    """
+
+    def __init__(self):
+        self.running = False
+        self._thread = None
+        self._scheduler = None
+        self._ib_state = None
+        self._config = {}
+        self.last_scan = None
+        self.last_trade = None
+        self.last_monitor = None
+        self.logs = deque(maxlen=100)
+
+    def start(self, config=None, ib_state_ref=None):
+        """Start daemon in background thread."""
+        if self.running:
+            return
+        self.running = True
+        self._ib_state = ib_state_ref
+        self._config = config or load_config()
+        self._setup_scheduler()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="autopilot-daemon")
+        self._thread.start()
+        self._log("DAEMON", "Daemon started — schedule: 09:00 Scan | 10:15 Trade | 16:30 Monitor")
+
+    def stop(self):
+        """Stop the daemon."""
+        if not self.running:
+            return
+        self.running = False
+        if self._scheduler:
+            self._scheduler.clear()
+        self._log("DAEMON", "Daemon stopped")
+
+    def _setup_scheduler(self):
+        import schedule
+        self._scheduler = schedule.Scheduler()
+        self._scheduler.every().day.at("09:00", "America/New_York").do(self._job_scan)
+        self._scheduler.every().day.at("10:15", "America/New_York").do(self._job_trade)
+        self._scheduler.every().day.at("16:30", "America/New_York").do(self._job_monitor)
+
+    def _loop(self):
+        while self.running:
+            try:
+                self._scheduler.run_pending()
+            except Exception as ex:
+                self._log("DAEMON", f"Scheduler error: {ex}", level="error")
+            time.sleep(30)
+
+    def _job_scan(self):
+        if not _is_weekday():
+            return
+        self._log("SCAN", "Starting scheduled scan...")
+        try:
+            run_scan()
+            self.last_scan = datetime.now().isoformat()
+            self._log("SCAN", "Scan completed")
+        except Exception as ex:
+            self._log("SCAN", f"Scan failed: {ex}", level="error")
+            send_alert("Daemon Scan Failed", str(ex), self._config)
+
+    def _job_trade(self):
+        if not _is_weekday():
+            return
+        ib_st = self._ib_state
+        if not ib_st:
+            self._log("TRADE", "No IBKR state available — skipping trade", level="warning")
+            return
+
+        # Auto-reconnect if disconnected but we have host/port
+        if not ib_st.get("connected") or not ib_st.get("ib") or not ib_st["ib"].isConnected():
+            host = ib_st.get("host")
+            port = ib_st.get("port")
+            if host and port:
+                self._log("TRADE", f"IBKR disconnected — attempting auto-reconnect to {host}:{port}...")
+                try:
+                    from core.trader import connect_ibkr, verify_paper
+                    from api.ibkr_worker import run_in_ib_thread
+                    def do_reconnect():
+                        ib = connect_ibkr(host, port)
+                        acct = verify_paper(ib)
+                        return ib, acct
+                    
+                    ib, acct = run_in_ib_thread(do_reconnect)
+                    ib_st["ib"] = ib
+                    ib_st["connected"] = True
+                    ib_st["account"] = acct
+                    self._log("TRADE", "Auto-reconnect successful")
+                except Exception as ex:
+                    self._log("TRADE", f"Auto-reconnect failed: {ex}", level="error")
+                    send_alert("Daemon: IBKR Reconnect Failed", 
+                               f"Trade failed because IBKR is offline and auto-reconnect failed: {ex}", 
+                               self._config)
+                    return
+            else:
+                self._log("TRADE", "IBKR not connected and no host/port available — skipping", level="warning")
+                return
+
+        self._log("TRADE", "Starting scheduled trade...")
+        try:
+            from api.ibkr_worker import run_in_ib_thread
+            result = run_in_ib_thread(run_trade_web, ib_st["ib"], ib_st["account"], self._config)
+            self.last_trade = datetime.now().isoformat()
+            closed = len(result.get("closed", []))
+            entered = len(result.get("entered", []))
+            errors = result.get("errors", [])
+            self._log("TRADE", f"Trade completed: {closed} closed, {entered} entered")
+            if errors:
+                for e in errors:
+                    self._log("TRADE", f"Error: {e}", level="error")
+        except Exception as ex:
+            self._log("TRADE", f"Trade failed: {ex}", level="error")
+            send_alert("Daemon Trade Failed", str(ex), self._config)
+
+    def _job_monitor(self):
+        if not _is_weekday():
+            return
+        self._log("MONITOR", "Starting scheduled monitor + report...")
+        try:
+            monitor_data = run_monitor()
+            run_report(config=self._config, monitor_data=monitor_data)
+            self.last_monitor = datetime.now().isoformat()
+            self._log("MONITOR", "Monitor + report completed")
+        except Exception as ex:
+            self._log("MONITOR", f"Monitor/report failed: {ex}", level="error")
+            send_alert("Daemon Monitor Failed", str(ex), self._config)
+
+    def _log(self, job, msg, level="info"):
+        entry = {"time": datetime.now().isoformat(), "job": job, "msg": msg, "level": level}
+        self.logs.append(entry)
+        getattr(log, level)(f"DAEMON: [{job}] {msg}")
+
+    def status(self):
+        next_jobs = []
+        if self.running and self._scheduler:
+            try:
+                for j in self._scheduler.get_jobs():
+                    next_run = j.next_run
+                    if next_run:
+                        next_jobs.append(next_run.strftime("%H:%M:%S %Z"))
+            except Exception:
+                pass
+
+        return {
+            "running": self.running,
+            "last_scan": self.last_scan,
+            "last_trade": self.last_trade,
+            "last_monitor": self.last_monitor,
+            "next_jobs": next_jobs,
+            "logs": list(self.logs)[-20:],
+        }
+
+
+# Module-level singleton
+daemon = DaemonScheduler()
 
 
 def run_daemon(config=None):
@@ -981,7 +1234,7 @@ def main():
         description="FF Double Calendar - Autopilot Orchestrator"
     )
     parser.add_argument("--scan", action="store_true",
-                        help="Run ThetaData scan (EODHD fallback)")
+                        help="Run ThetaData scan")
     parser.add_argument("--trade", action="store_true",
                         help="Close J-1 + Enter new (IBKR required)")
     parser.add_argument("--paper", action="store_true",

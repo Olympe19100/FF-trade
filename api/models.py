@@ -4,6 +4,12 @@ from pydantic import BaseModel
 from typing import Optional
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+    mode: str = "paper"          # "paper" or "live"
+
+
 class ConnectRequest(BaseModel):
     host: str = "127.0.0.1"
     port: int = 4002
@@ -35,8 +41,14 @@ class AddPositionRequest(BaseModel):
     ff: float
     spread_type: str = "double"
     n_legs: int = 4
+    send_to_ibkr: Optional[bool] = None  # None=auto, True=force IBKR, False=track only
 
 
 class ClosePositionRequest(BaseModel):
     position_id: str
     exit_price: Optional[float] = None
+    use_ibkr: Optional[bool] = None  # None=auto-detect, True=force IBKR, False=paper
+
+
+class DaemonConfig(BaseModel):
+    auto_start: Optional[bool] = True  # start daemon on app launch

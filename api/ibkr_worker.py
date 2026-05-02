@@ -11,6 +11,7 @@ original loop.
 
 import asyncio
 import queue
+import random
 import threading
 import concurrent.futures
 from collections import deque
@@ -24,7 +25,47 @@ ib_state: dict = {
     "account": None,
     "host": "127.0.0.1",
     "port": 4002,
+    "connect_time": None,
 }
+
+
+def safe_disconnect() -> None:
+    """Cleanly disconnect the current IB session (if any).
+
+    Resets ib_state so a fresh connection can be made without
+    clientId conflicts.
+    """
+    ib = ib_state.get("ib")
+    if ib is not None:
+        try:
+            if ib.isConnected():
+                ib.disconnect()
+        except Exception:
+            pass
+        # Give IBKR time to release the clientId
+        import time as _time
+        _time.sleep(1)
+    ib_state["ib"] = None
+    ib_state["connected"] = False
+    ib_state["account"] = None
+    ib_state["connect_time"] = None
+
+
+_last_client_id = 0
+
+def next_client_id() -> int:
+    """Return a sequential clientId to avoid conflicts.
+
+    Uses a random base + incrementing counter so we never reuse
+    a clientId from a stale session that IBKR hasn't released yet.
+    """
+    global _last_client_id
+    if _last_client_id == 0:
+        _last_client_id = random.randint(100, 500)
+    _last_client_id += 1
+    if _last_client_id > 999:
+        _last_client_id = 100
+    return _last_client_id
 
 # Order execution log (bounded deque, last 500 entries)
 order_log: deque = deque(maxlen=500)

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CS TERMINAL</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=5">
 </head>
 <body>
     <div class="app">
@@ -24,8 +24,14 @@
         <!-- Sidebar -->
         <nav class="sidebar">
             <div class="nav-section">
+                <div class="nav-label">System</div>
+                <div class="nav-item" data-tab="home">
+                    <span class="icon">F0</span> HOME
+                </div>
+            </div>
+            <div class="nav-section">
                 <div class="nav-label">Trading</div>
-                <div class="nav-item active" data-tab="signals">
+                <div class="nav-item" data-tab="signals">
                     <span class="icon">F1</span> SIGNALS
                     <span class="nav-badge" id="badge-signals"></span>
                 </div>
@@ -36,7 +42,7 @@
                 <div class="nav-item" data-tab="orders">
                     <span class="icon">F3</span> ORDERS
                 </div>
-                <div class="nav-item" data-tab="monitor" style="display:none">
+                <div class="nav-item" data-tab="monitor">
                     <span class="icon">F4</span> MONITOR
                     <span class="nav-badge" id="badge-monitor"></span>
                 </div>
@@ -79,7 +85,13 @@
 
         <!-- Main Content -->
         <main class="main">
-            <div id="tab-signals" class="tab-content active">
+            <div id="tab-home" class="tab-content">
+                <div id="home-content">
+                    <div class="loading"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+
+            <div id="tab-signals" class="tab-content">
                 <div id="signals-content">
                     <div class="loading"><div class="spinner"></div> Loading...</div>
                 </div>
@@ -117,21 +129,6 @@
         </main>
     </div>
 
-    <!-- Connect Modal -->
-    <div id="connect-modal" class="modal-backdrop">
-        <div class="modal">
-            <div class="modal-title">Connect to IBKR</div>
-            <label style="font-size:11px;color:var(--text-secondary)">Host</label>
-            <input id="ibkr-host" type="text" value="127.0.0.1" placeholder="127.0.0.1">
-            <label style="font-size:11px;color:var(--text-secondary)">Port (4002=Gateway, 7497=TWS)</label>
-            <input id="ibkr-port" type="number" value="4002" placeholder="4002">
-            <div class="modal-actions">
-                <button class="btn" onclick="closeModal('connect-modal')">Cancel</button>
-                <button class="btn btn-primary" id="connect-go" onclick="doConnect()">Connect</button>
-            </div>
-        </div>
-    </div>
-
     <!-- Order Confirm Modal -->
     <div id="order-modal" class="modal-backdrop">
         <div class="modal">
@@ -151,14 +148,64 @@
             <div class="modal-title">Add to Portfolio</div>
             <div id="add-position-body" style="font-size:11px; color:var(--text-secondary); margin-bottom:12px;"></div>
             <label style="font-size:11px;color:var(--text-secondary)">Contracts</label>
-            <input id="add-pos-contracts" type="number" min="1" max="10" value="1" style="width:80px;">
+            <input id="add-pos-contracts" type="number" min="1" max="100" value="1" style="width:80px;">
+            <div id="add-pos-ibkr-status" style="margin-top:8px;font-size:10px;"></div>
             <div class="modal-actions">
                 <button class="btn" onclick="closeModal('add-position-modal')">Cancel</button>
-                <button class="btn btn-primary" id="add-pos-confirm" onclick="confirmAddPosition()">Add</button>
+                <button class="btn" id="add-pos-track" onclick="confirmAddPosition(false)"
+                        style="display:none">Track Only</button>
+                <button class="btn btn-primary" id="add-pos-confirm" onclick="confirmAddPosition(true)">
+                    Send to IBKR</button>
             </div>
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <!-- Close Position Modal -->
+    <div id="close-position-modal" class="modal-backdrop">
+        <div class="modal" style="max-width:480px;">
+            <div class="modal-title">Close Position</div>
+            <div id="close-position-body" style="font-size:11px; color:var(--text-secondary); margin-bottom:12px;"></div>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal('close-position-modal')">Cancel</button>
+                <button class="btn" id="close-pos-paper" onclick="confirmClosePosition(false)"
+                        style="display:none">Paper Close</button>
+                <button class="btn btn-primary" id="close-pos-confirm"
+                        onclick="confirmClosePosition(true)">Close on IBKR</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Autopilot Confirmation Modal -->
+    <div id="autopilot-modal" class="modal-backdrop">
+        <div class="modal" style="max-width:480px;">
+            <div class="modal-title" style="display:flex;align-items:center;gap:8px;">
+                <span class="card-icon" style="background:var(--green);color:#000;width:24px;height:24px;font-size:13px;">A</span>
+                Autopilot Mode
+            </div>
+            <div id="autopilot-modal-body" style="font-size:11px;color:var(--text-secondary);margin-bottom:12px;">
+                <p style="margin-bottom:10px;">Enable the autonomous trading daemon? It will run the following schedule daily (Eastern Time):</p>
+                <table style="width:100%;margin-bottom:10px;font-size:11px;">
+                    <tr><td style="padding:4px 8px;border-bottom:1px solid var(--border);color:var(--accent);font-weight:700;">09:00</td>
+                        <td style="padding:4px 8px;border-bottom:1px solid var(--border);">Scan — find FF signals across S&amp;P 500</td></tr>
+                    <tr><td style="padding:4px 8px;border-bottom:1px solid var(--border);color:var(--accent);font-weight:700;">10:15</td>
+                        <td style="padding:4px 8px;border-bottom:1px solid var(--border);">Trade — close expiring + enter new positions</td></tr>
+                    <tr><td style="padding:4px 8px;color:var(--accent);font-weight:700;">16:30</td>
+                        <td style="padding:4px 8px;">Monitor — price positions + email report</td></tr>
+                </table>
+                <div style="padding:8px;border:1px solid var(--border);background:var(--bg-secondary);margin-bottom:8px;">
+                    <div style="font-weight:700;color:var(--accent);margin-bottom:4px;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">Safety</div>
+                    <div style="line-height:1.5;">
+                        Trades execute <strong>only when IBKR is connected</strong>. If IBKR is offline at 10:15, trades are skipped and an alert email is sent. Scan and monitor run independently via ThetaData. Weekends are skipped.
+                    </div>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn" onclick="skipAutopilot()">Skip</button>
+                <button class="btn btn-primary" onclick="enableAutopilot()">Enable Autopilot</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=11"></script>
 </body>
 </html>

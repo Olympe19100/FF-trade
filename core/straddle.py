@@ -41,7 +41,7 @@ log = get_logger(__name__)
 
 # ── Straddle-specific parameters (OQuants PPTX slides 19, 36, 41) ──
 ENTRY_WINDOW     = (10, 18)    # calendar days before earnings (slide 19: +/-4 days)
-SLIPPAGE_SHARE   = SLIPPAGE_BUFFER  # reuse central value ($/share/leg)
+BA_FILL_FRACTION = 0.10             # fraction of bid-ask spread paid as slippage (10%)
 MAX_POSITIONS    = 10          # straddle-specific (different from calendar's 20)
 MIN_ALLOC_TRADE  = 0.02        # 2% min per trade (slide 41)
 MAX_ALLOC_TRADE  = 0.06        # 6% max per trade (slide 41)
@@ -216,31 +216,18 @@ def build_earnings_straddle_history(
                 n_skip_no_data += 1
                 continue
 
-            # --- Find monthly expiration ---
+            # --- Find nearest monthly expiration after the earnings event ---
+            # OQuants slide 19: "Use nearest monthly (third friday) expiry after event"
             exp_int = next_monthly_expiration(report_date)
 
-            # Verify this expiration exists in DB; if not try nearby months
+            # Verify this expiration exists in the DB for this ticker
             exp_check = conn.execute(
                 "SELECT 1 FROM contracts WHERE root = ? AND expiration = ? LIMIT 1",
                 (root, exp_int)
             ).fetchone()
             if not exp_check:
-                # Try next month
-                d = _int_to_date(exp_int)
-                if d.month == 12:
-                    alt = third_friday(d.year + 1, 1)
-                else:
-                    alt = third_friday(d.year, d.month + 1)
-                alt_int = _date_to_int(alt)
-                exp_check = conn.execute(
-                    "SELECT 1 FROM contracts WHERE root = ? AND expiration = ? LIMIT 1",
-                    (root, alt_int)
-                ).fetchone()
-                if exp_check:
-                    exp_int = alt_int
-                else:
-                    n_skip_no_contracts += 1
-                    continue
+                n_skip_no_contracts += 1
+                continue
 
             # --- Find ATM strike: where |call_mid - put_mid| is minimal ---
             # Get top 10 most liquid calls, then check put at each strike
@@ -319,7 +306,8 @@ def build_earnings_straddle_history(
                 n_skip_low_volume += 1
                 continue
 
-            atm_strike = best_atm["strike"]
+            atm_strike_raw = best_atm["strike"]      # millidollars in DB
+            actual_strike = atm_strike_raw / 1000.0   # convert to dollars
             call_mid_entry = best_atm["call_mid"]
             put_mid_entry = best_atm["put_mid"]
             call_cid = best_atm["call_id"]
@@ -351,23 +339,25 @@ def build_earnings_straddle_history(
             straddle_entry = call_mid_entry + put_mid_entry
             straddle_exit = call_mid_exit + put_mid_exit
 
+            # Real bid/ask straddle prices (buy at ask, sell at bid)
+            call_bid_entry = best_atm["call_bid"]
+            call_ask_entry = best_atm["call_ask"]
+            put_bid_entry = best_atm["put_bid"]
+            put_ask_entry = best_atm["put_ask"]
+            call_bid_exit, call_ask_exit = call_exit[0], call_exit[1]
+            put_bid_exit, put_ask_exit = put_exit[0], put_exit[1]
+
+            straddle_entry_ask = call_ask_entry + put_ask_entry  # what we pay
+            straddle_exit_bid = call_bid_exit + put_bid_exit      # what we get
+
             if straddle_entry <= 1.00:  # Minimum $1 straddle price
                 n_skip_no_data += 1
                 continue
 
             # --- Underlying via put-call parity: S = K + C - P ---
-            actual_strike = atm_strike / 1000.0  # ThetaData stores strikes in mils
             underlying_entry = actual_strike + call_mid_entry - put_mid_entry
-            underlying_exit = actual_strike + call_mid_exit - put_mid_exit
-
-            if underlying_entry <= 0:
-                n_skip_no_data += 1
-                continue
-
-            # ATM quality filter: strike within 5% of underlying
-            if abs(actual_strike - underlying_entry) / underlying_entry > 0.05:
-                n_skip_no_data += 1
-                continue
+            underlying_exit_pc = actual_strike + call_mid_exit - put_mid_exit
+            underlying_exit = underlying_exit_pc if underlying_exit_pc > 0 else underlying_entry
 
             # --- ATM Implied Volatility via Black-Scholes inversion ---
             exp_dt = _int_to_date(exp_int)
@@ -388,7 +378,6 @@ def build_earnings_straddle_history(
             atm_iv_entry = np.mean(ivs_entry)
 
             # Exit IV (for tracking IV change over holding period)
-            underlying_exit_pc = actual_strike + call_mid_exit - put_mid_exit
             if underlying_exit_pc > 0:
                 call_iv_exit = implied_vol_scalar(call_mid_exit, underlying_exit_pc,
                                       actual_strike, T_exit, r=0.0, right='C')
@@ -399,8 +388,61 @@ def build_earnings_straddle_history(
             else:
                 atm_iv_exit = np.nan
 
-            # Implied move: IV-derived expected move (comparable to realized_move)
-            implied_move = atm_iv_entry * np.sqrt(T_entry)
+            # --- Event vol decomposition (OQuants slides 9-12) ---
+            # Find second monthly expiry (next after exp1) for forward vol
+            # Forward vol between exp1 and exp2 "cancels" the shared event,
+            # yielding ambient vol. Then event_var = total_var - ambient_var.
+            exp2_dt = third_friday(exp_dt.year + (1 if exp_dt.month == 12 else 0),
+                                   (exp_dt.month % 12) + 1)
+            exp2_int = _date_to_int(exp2_dt)
+            T2_entry = max((exp2_dt - entry_dt).days, 1) / 365.0
+
+            # Try to get IV at exp2 for the same ATM strike
+            c2_row = conn.execute(
+                "SELECT e.bid, e.ask FROM contracts c "
+                "JOIN eod_history e ON c.contract_id = e.contract_id "
+                "WHERE c.root = ? AND c.expiration = ? AND c.right = 'C' "
+                "AND c.strike = ? AND e.date = ? AND e.bid > 0 AND e.ask > 0 "
+                "LIMIT 1",
+                (root, exp2_int, atm_strike_raw, entry_date)
+            ).fetchone()
+            p2_row = conn.execute(
+                "SELECT e.bid, e.ask FROM contracts c "
+                "JOIN eod_history e ON c.contract_id = e.contract_id "
+                "WHERE c.root = ? AND c.expiration = ? AND c.right = 'P' "
+                "AND c.strike = ? AND e.date = ? AND e.bid > 0 AND e.ask > 0 "
+                "LIMIT 1",
+                (root, exp2_int, atm_strike_raw, entry_date)
+            ).fetchone()
+
+            if c2_row and p2_row:
+                c2_mid = (c2_row[0] + c2_row[1]) / 2
+                p2_mid = (p2_row[0] + p2_row[1]) / 2
+                civ2 = implied_vol_scalar(c2_mid, underlying_entry, actual_strike,
+                                          T2_entry, r=0.0, right='C')
+                piv2 = implied_vol_scalar(p2_mid, underlying_entry, actual_strike,
+                                          T2_entry, r=0.0, right='P')
+                ivs2 = [v for v in [civ2, piv2] if not np.isnan(v) and v > 0]
+                if ivs2 and T2_entry > T_entry:
+                    iv2 = np.mean(ivs2)
+                    # Forward vol = ambient vol (slides 9-10)
+                    fwd_var = (iv2**2 * T2_entry - atm_iv_entry**2 * T_entry) / (T2_entry - T_entry)
+                    if fwd_var > 0:
+                        ambient_iv = np.sqrt(fwd_var)
+                        # Event variance (slide 11): total - ambient for non-event days
+                        total_var = atm_iv_entry**2 * T_entry
+                        ambient_var = ambient_iv**2 * max(T_entry - 1.0/365.0, 0)
+                        event_var = max(total_var - ambient_var, 0)
+                        # Implied move (slide 12): sqrt(event_var) × E[|Z|]
+                        implied_move = np.sqrt(event_var) * np.sqrt(2.0 / np.pi)
+                    else:
+                        # Negative forward var → fallback to total IV
+                        implied_move = atm_iv_entry * np.sqrt(T_entry)
+                else:
+                    implied_move = atm_iv_entry * np.sqrt(T_entry)
+            else:
+                # No second expiry data → fallback to total IV move
+                implied_move = atm_iv_entry * np.sqrt(T_entry)
 
             # --- Realized move (from bt_prices, ratios are split-invariant) ---
             realized_move = np.nan
@@ -426,10 +468,14 @@ def build_earnings_straddle_history(
 
             # --- Returns ---
             gross_return = (straddle_exit - straddle_entry) / straddle_entry
-            slippage_cost = SLIPPAGE_SHARE * 4
-            commission_cost = COMMISSION_LEG * 4 / CONTRACT_MULT
-            total_cost = slippage_cost + commission_cost
-            net_return = (straddle_exit - straddle_entry - total_cost) / straddle_entry
+            # Net return using fractional spread: realistic limit order fill
+            # BA_FILL_FRACTION of the spread is the expected slippage
+            entry_spread = straddle_entry_ask - straddle_entry  # full entry spread
+            exit_spread = straddle_exit - straddle_exit_bid      # full exit spread
+            slippage_cost = BA_FILL_FRACTION * (entry_spread + exit_spread)
+            commission_cost = COMMISSION_LEG * 4 / CONTRACT_MULT  # $0.026/share
+            actual_entry = straddle_entry + BA_FILL_FRACTION * entry_spread
+            net_return = (straddle_exit - actual_entry - BA_FILL_FRACTION * exit_spread - commission_cost) / actual_entry
 
             results.append({
                 "root": root,
@@ -441,6 +487,8 @@ def build_earnings_straddle_history(
                 "exit_date": exit_date,
                 "entry_straddle": round(straddle_entry, 4),
                 "exit_straddle": round(straddle_exit, 4),
+                "entry_straddle_ask": round(straddle_entry_ask, 4),
+                "exit_straddle_bid": round(straddle_exit_bid, 4),
                 "entry_underlying": round(underlying_entry, 2),
                 "exit_underlying": round(underlying_exit, 2),
                 "implied_move": round(implied_move, 6),
@@ -481,17 +529,15 @@ def build_earnings_straddle_history(
 # ═══════════════════════════════════════════════════════════════
 
 def compute_signals(history: pd.DataFrame) -> pd.DataFrame:
-    """Compute the 5 OQuants regression signals using true BS implied vol.
+    """Compute the 4 OQuants regression signals (slides 24-27).
 
-    Per-ticker expanding window (slides 18-30):
-    1. implied_move                — raw implied move level (coeff -0.06)
-    2. atm_iv / last_atm_iv       — IV ratio vs previous earnings (coeff -0.05)
-    3. implied_move - last_real    — gap vs previous realized (coeff -0.07)
-    4. atm_iv / avg_atm_iv        — IV ratio vs expanding avg IV (coeff -0.07)
-    5. implied_move - avg_real     — gap vs expanding avg realized (coeff -0.10)
+    Per-ticker expanding window:
+    1. implied_move / last_implied_move   — move ratio vs previous earnings
+    2. implied_move - last_realized       — gap vs previous realized
+    3. implied_move / avg_implied_move    — move ratio vs expanding avg
+    4. implied_move - avg_realized        — gap vs expanding avg realized
     """
     df = history.copy()
-    df["sig_implied_move"] = np.nan
     df["sig_impl_vs_last_impl"] = np.nan
     df["sig_impl_minus_last_real"] = np.nan
     df["sig_impl_vs_avg_impl"] = np.nan
@@ -499,48 +545,45 @@ def compute_signals(history: pd.DataFrame) -> pd.DataFrame:
 
     for root, grp in df.groupby("root"):
         idx = grp.index
-        iv = grp["atm_iv_entry"].values       # True BS IV for ratios
-        implied = grp["implied_move"].values   # IV-derived expected move for gaps
+        implied = grp["implied_move"].values   # IV × sqrt(T) — OQuants "implied move"
         realized = grp["realized_move"].values
 
         for i in range(len(grp)):
-            # Signal 1: raw implied move (available from first event)
-            df.loc[idx[i], "sig_implied_move"] = implied[i]
-
             if i == 0:
-                continue  # Signals 2-5 need at least 1 prior event
+                continue  # All 4 signals need at least 1 prior event
 
-            cur_iv = iv[i]
             cur_impl = implied[i]
 
-            # Signal 2: atm_iv / last_atm_iv (IV ratio, DTE-invariant)
-            last_iv = iv[i - 1]
-            if last_iv > 0:
-                df.loc[idx[i], "sig_impl_vs_last_impl"] = cur_iv / last_iv
+            # Signal 1: implied_move / last_implied_move (slide 24)
+            last_impl = implied[i - 1]
+            if last_impl > 0:
+                df.loc[idx[i], "sig_impl_vs_last_impl"] = cur_impl / last_impl
 
-            # Signal 3: implied_move - last_realized (expected move gap)
+            # Signal 2: implied_move - last_realized (slide 25)
             last_real = realized[i - 1]
             if not np.isnan(last_real):
                 df.loc[idx[i], "sig_impl_minus_last_real"] = cur_impl - last_real
 
-            # Signal 4: atm_iv / avg_atm_iv (IV ratio, DTE-invariant)
-            past_iv = iv[:i]
-            valid_iv = past_iv[~np.isnan(past_iv)]
-            avg_iv = valid_iv.mean() if len(valid_iv) > 0 else 0
-            if avg_iv > 0:
-                df.loc[idx[i], "sig_impl_vs_avg_impl"] = cur_iv / avg_iv
+            # Signal 3: implied_move / avg_implied_move (slide 26)
+            past_impl = implied[:i]
+            valid_impl = past_impl[~np.isnan(past_impl)]
+            avg_impl = valid_impl.mean() if len(valid_impl) > 0 else 0
+            if avg_impl > 0:
+                df.loc[idx[i], "sig_impl_vs_avg_impl"] = cur_impl / avg_impl
 
-            # Signal 5: implied_move - avg_realized (expanding window)
+            # Signal 4: implied_move - avg_realized (slide 27)
             past_realized = realized[:i]
             valid_real = past_realized[~np.isnan(past_realized)]
             if len(valid_real) > 0:
                 df.loc[idx[i], "sig_impl_minus_avg_real"] = cur_impl - valid_real.mean()
 
     # Drop rows without signals
-    sig_cols = ["sig_implied_move", "sig_impl_vs_last_impl",
-                "sig_impl_minus_last_real", "sig_impl_vs_avg_impl",
+    sig_cols = ["sig_impl_vs_last_impl",
+                "sig_impl_minus_last_real",
+                "sig_impl_vs_avg_impl",
                 "sig_impl_minus_avg_real"]
     before = len(df)
+    df["sig_impl_raw"] = df["implied_move"]
     df = df.dropna(subset=sig_cols).reset_index(drop=True)
     log.info("Signals computed: %d events (%d dropped for insufficient history)",
              len(df), before - len(df))
@@ -552,9 +595,21 @@ def compute_signals(history: pd.DataFrame) -> pd.DataFrame:
 # Phase 3 — Walk-Forward Regression + Backtest
 # ═══════════════════════════════════════════════════════════════
 
-SIG_COLS = ["sig_implied_move", "sig_impl_vs_last_impl",
+SIG_COLS = ["sig_impl_vs_last_impl",
             "sig_impl_minus_last_real", "sig_impl_vs_avg_impl",
             "sig_impl_minus_avg_real"]
+
+# ── Academic Study "Master Model" (fitted on 21,000+ trades) ──
+MASTER_MODEL = {
+    "coefficients": {
+        "sig_impl_vs_last_impl": -0.9596,
+        "sig_impl_minus_last_real": -0.1880,      # applied to diff in %
+        "sig_impl_vs_avg_impl": -1.1505,
+        "sig_impl_minus_avg_real": -0.6233        # applied to diff in %
+    },
+    "intercept": 3.3773,  # result in %
+    "is_master": True
+}
 
 
 def walk_forward_regression(
@@ -563,15 +618,16 @@ def walk_forward_regression(
 ) -> pd.DataFrame:
     """Expanding-window OLS regression.
 
-    Train on all events before t, predict return at t.
-    Filter: predicted_return > 0.
+    Train on gross_return (market signal), not net_return.
+    The model predicts the gross move; transaction costs are applied in the
+    backtest.  Filter: predicted_return > 0 (positive gross move expected).
     """
     df = signals_df.sort_values("report_date").reset_index(drop=True)
     df["predicted_return"] = np.nan
     df["is_oos"] = False
 
     X = df[SIG_COLS].values
-    y = df["net_return"].values
+    y = df["gross_return"].values
 
     for t in range(min_train, len(df)):
         X_train = X[:t]
@@ -608,11 +664,11 @@ def walk_forward_regression(
         "n_train": int(mask_all.sum()),
     }
 
-    # OOS correlation
-    oos_valid = oos.dropna(subset=["predicted_return", "net_return"])
+    # OOS correlation (vs gross_return, since model predicts gross)
+    oos_valid = oos.dropna(subset=["predicted_return", "gross_return"])
     if len(oos_valid) > 10:
         corr, pval = sp_stats.pearsonr(oos_valid["predicted_return"],
-                                        oos_valid["net_return"])
+                                        oos_valid["gross_return"])
         model_info["oos_correlation"] = round(corr, 4)
         model_info["oos_pvalue"] = round(pval, 4)
 
@@ -626,8 +682,8 @@ def run_backtest(
 ) -> dict:
     """Walk-forward backtest with OQuants sizing (2-6% per trade, slide 41).
 
-    Entry: buy straddle at mid + slippage.
-    Exit: sell at mid - slippage.
+    Entry: buy straddle at mid + BA_FILL_FRACTION of spread.
+    Exit: sell straddle at mid - BA_FILL_FRACTION of spread.
     Commission: $0.65/leg x 4 = $2.60/contract.
     """
     df = tradeable_df.sort_values("entry_date").reset_index(drop=True)
@@ -686,10 +742,10 @@ def run_backtest(
             alloc_per_pos = alloc_pct * account
 
             for _, row in entries.head(slots).iterrows():
-                price = row["entry_straddle"]
-                slippage = SLIPPAGE_SHARE * 2  # 2 legs in
-                entry_cost = price + slippage
-                comm = COMMISSION_LEG * 2 / CONTRACT_MULT  # per share
+                # Fractional spread slippage at entry
+                mid_entry = row["entry_straddle"]
+                ask_entry = row.get("entry_straddle_ask", mid_entry)
+                entry_cost = mid_entry + BA_FILL_FRACTION * (ask_entry - mid_entry)
 
                 # Number of contracts
                 contracts = int(alloc_per_pos / (entry_cost * CONTRACT_MULT))
@@ -703,12 +759,17 @@ def run_backtest(
 
                 account -= invested
 
+                # Fractional spread slippage at exit
+                mid_exit = row["exit_straddle"]
+                bid_exit = row.get("exit_straddle_bid", mid_exit)
+                exit_price = mid_exit - BA_FILL_FRACTION * (mid_exit - bid_exit)
+
                 positions.append({
                     "root": row["root"],
                     "entry_date": day,
                     "exit_date": row["exit_date"],
                     "entry_price": entry_cost,
-                    "exit_price": row["exit_straddle"] - SLIPPAGE_SHARE * 2,
+                    "exit_price": exit_price,
                     "contracts": contracts,
                     "invested": invested,
                     "net_return": row["net_return"],
@@ -895,12 +956,11 @@ def generate_straddle_charts(backtest_result: dict, signals_df: pd.DataFrame,
     plt.close(fig)
     charts.append("straddle_distribution.png")
 
-    # 3. Signal scatter plots (3x2 for 5 signals)
-    fig, axes = plt.subplots(3, 2, figsize=(10, 12))
+    # 3. Signal scatter plots (2x2 for 4 signals)
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
     _apply_dark_theme(axes[0, 0], fig)
 
     sig_labels = [
-        ("sig_implied_move", "Implied Move (raw)"),
         ("sig_impl_vs_last_impl", "Implied / Last Implied"),
         ("sig_impl_minus_last_real", "Implied - Last Realized"),
         ("sig_impl_vs_avg_impl", "Implied / Avg Implied"),
@@ -1074,6 +1134,106 @@ def _fetch_ibkr_earnings(tickers, days_min=10, days_max=18):
     return pd.DataFrame()
 
 
+def _fetch_live_implied_move(ticker: str, report_date: int) -> float | None:
+    """Fetch current ATM implied move from ThetaData for a ticker.
+
+    Finds the nearest monthly expiration after earnings, identifies the ATM
+    strike, computes IV via Newton-Raphson, and returns implied_move = IV * sqrt(T).
+
+    Returns None on failure.
+    """
+    try:
+        from core.scanner import fetch_option_chain_thetadata
+
+        stock_px, chain = fetch_option_chain_thetadata(ticker)
+        if stock_px <= 0 or chain.empty:
+            return None
+
+        # Find nearest monthly expiration after earnings
+        exp_int = next_monthly_expiration(report_date)
+        exp_str = _int_to_date(exp_int).strftime("%Y-%m-%d")
+
+        # Filter chain for this expiration
+        exp_chain = chain[chain["exp_date"] == exp_str]
+        if exp_chain.empty:
+            return None
+
+        calls = exp_chain[exp_chain["type"] == "call"]
+        puts = exp_chain[exp_chain["type"] == "put"]
+        if calls.empty or puts.empty:
+            return None
+
+        # Find ATM: strike closest to stock price with both call and put
+        calls_valid = calls[(calls["bid"] > 0) & (calls["ask"] > 0)].copy()
+        puts_valid = puts[(puts["bid"] > 0) & (puts["ask"] > 0)].copy()
+        if calls_valid.empty or puts_valid.empty:
+            return None
+
+        # Common strikes
+        common_strikes = set(calls_valid["strike"]) & set(puts_valid["strike"])
+        if not common_strikes:
+            return None
+
+        # Closest to stock_px
+        atm_strike = min(common_strikes, key=lambda k: abs(k - stock_px))
+
+        call_row = calls_valid[calls_valid["strike"] == atm_strike].iloc[0]
+        put_row = puts_valid[puts_valid["strike"] == atm_strike].iloc[0]
+
+        call_mid = (call_row["bid"] + call_row["ask"]) / 2
+        put_mid = (put_row["bid"] + put_row["ask"]) / 2
+
+        # Time to expiration
+        today = datetime.now().date()
+        exp_date = _int_to_date(exp_int)
+        T = max((exp_date - today).days, 1) / 365.0
+
+        # IV via Newton-Raphson (average call + put IV)
+        call_iv = implied_vol_scalar(call_mid, stock_px, atm_strike, T, r=0.0, right='C')
+        put_iv = implied_vol_scalar(put_mid, stock_px, atm_strike, T, r=0.0, right='P')
+
+        ivs = [v for v in [call_iv, put_iv] if not np.isnan(v) and v > 0]
+        if not ivs:
+            return None
+
+        atm_iv = np.mean(ivs)
+        
+        # --- Extract Ambient Volatility & Calculate Implied Move (OQuants method) ---
+        exp_dt = _int_to_date(exp_int)
+        if exp_dt.month == 12:
+            exp2_date = third_friday(exp_dt.year + 1, 1)
+        else:
+            exp2_date = third_friday(exp_dt.year, exp_dt.month + 1)
+        exp2_int = _date_to_int(exp2_date)
+        
+        c2 = df_chain[(df_chain["right"] == "C") & (df_chain["expiration"] == exp2_int) & (df_chain["strike"] == atm_strike)]
+        p2 = df_chain[(df_chain["right"] == "P") & (df_chain["expiration"] == exp2_int) & (df_chain["strike"] == atm_strike)]
+        
+        ambient_iv = atm_iv  # fallback
+        if not c2.empty and not p2.empty:
+            c2_mid = (c2.iloc[0]["bid"] + c2.iloc[0]["ask"]) / 2
+            p2_mid = (p2.iloc[0]["bid"] + p2.iloc[0]["ask"]) / 2
+            T2 = max((exp2_date - today).days, 1) / 365.0
+            c2_iv = implied_vol_scalar(c2_mid, stock_px, atm_strike, T2, r=0.0, right='C')
+            p2_iv = implied_vol_scalar(p2_mid, stock_px, atm_strike, T2, r=0.0, right='P')
+            ivs2 = [v for v in [c2_iv, p2_iv] if not np.isnan(v)]
+            if ivs2:
+                ambient_iv = np.mean(ivs2)
+                
+        total_variance = (atm_iv ** 2) * T
+        ambient_variance = (ambient_iv ** 2) * max(T - 1.0/365.0, 0)
+        event_variance = max(total_variance - ambient_variance, 0)
+        implied_move = np.sqrt(event_variance) * np.sqrt(2.0 / np.pi)
+
+        log.debug("Scanner live IV: %s ATM_K=%.0f IV=%.1f%% impl_move=%.1f%%",
+                  ticker, atm_strike, atm_iv * 100, implied_move * 100)
+        return float(implied_move)
+
+    except Exception as ex:
+        log.debug("Scanner: live IV fetch failed for %s: %s", ticker, ex)
+        return None
+
+
 def scan_upcoming_earnings(
     days_min: int = 10,
     days_max: int = 18,
@@ -1145,13 +1305,14 @@ def scan_upcoming_earnings(
         avg_real = root_hist["realized_move"].mean()
         avg_impl = root_hist["implied_move"].mean()
 
-        # We need current implied move — use last known as proxy
-        # (in live trading, would fetch from EODHD/IBKR)
-        cur_impl = last_impl  # placeholder
+        # Fetch LIVE implied move from ThetaData option chain
+        cur_impl = _fetch_live_implied_move(root, report_date)
+        if cur_impl is None or cur_impl <= 0:
+            log.debug("Scanner: no live IV for %s, using last known", root)
+            cur_impl = last_impl  # fallback to last known
 
-        # Build signals (5 predictors, slides 18-30)
+        # Build signals (4 predictors, OQuants slides 24-27)
         sigs = {}
-        sigs["sig_implied_move"] = cur_impl
         sigs["sig_impl_vs_last_impl"] = cur_impl / last_impl if last_impl > 0 else np.nan
         sigs["sig_impl_minus_last_real"] = cur_impl - last_real if not np.isnan(last_real) else np.nan
         sigs["sig_impl_vs_avg_impl"] = cur_impl / avg_impl if avg_impl > 0 else np.nan
@@ -1160,12 +1321,13 @@ def scan_upcoming_earnings(
         if any(np.isnan(v) for v in sigs.values()):
             continue
 
-        # Predict
-        coefs = model_info["coefficients"]
-        intercept = model_info["intercept"]
-        pred = intercept
-        for col in SIG_COLS:
-            pred += coefs[col] * sigs[col]
+        # Predict using Master Model (Study coefficients)
+        # Scaling: differences must be in % for these coefficients
+        pred = MASTER_MODEL["intercept"]
+        pred += MASTER_MODEL["coefficients"]["sig_impl_vs_last_impl"] * sigs["sig_impl_vs_last_impl"]
+        pred += MASTER_MODEL["coefficients"]["sig_impl_minus_last_real"] * (sigs["sig_impl_minus_last_real"] * 100)
+        pred += MASTER_MODEL["coefficients"]["sig_impl_vs_avg_impl"] * sigs["sig_impl_vs_avg_impl"]
+        pred += MASTER_MODEL["coefficients"]["sig_impl_minus_avg_real"] * (sigs["sig_impl_minus_avg_real"] * 100)
 
         if pred <= 0:
             continue
@@ -1183,7 +1345,7 @@ def scan_upcoming_earnings(
             "n_historical_events": len(root_hist),
             "avg_implied_move": round(float(avg_impl * 100), 2),
             "avg_realized_move": round(float(avg_real * 100), 2),
-            "predicted_return": round(float(pred * 100), 2),
+            "predicted_return": round(float(pred), 2),
             **{k: round(float(v), 4) for k, v in sigs.items()},
         })
 

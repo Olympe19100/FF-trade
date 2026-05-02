@@ -61,22 +61,24 @@ LMT_WALK_STEP    = 0.05       # $/share step when walking limit price
 LMT_WALK_MAX     = 10         # Max price walk iterations
 LMT_WALK_WAIT    = 15         # Seconds to wait at each price level
 
-COMBO_TIMEOUT    = 300        # 5 min combo attempt
-COMBO_WALK_STEP  = 0.05       # $/share step for combo walk
-COMBO_WALK_WAIT  = 30         # Seconds between combo walks
-LEG_WALK_STEP    = 0.02       # $/share step for individual leg walk
-LEG_WALK_WAIT    = 20         # Seconds between leg walks
-LEG_MAX_WALK     = 0.15       # 15% max deviation from mid
-LEG_TIMEOUT      = 120        # 2 min per individual leg
+COMBO_TIMEOUT    = 90         # Adaptive algo handles price discovery
+COMBO_WALK_STEP  = 0.05       # $/share step when walking combo limit price
+COMBO_WALK_WAIT  = 30         # Seconds to wait at each combo price level
+LEG_WALK_STEP    = 0.02       # (legacy — unused with Adaptive Algo)
+LEG_WALK_WAIT    = 20         # (legacy — unused with Adaptive Algo)
+LEG_MAX_WALK     = 0.15       # (legacy — unused with Adaptive Algo)
+LEG_TIMEOUT      = 45         # Adaptive Urgent fills quickly
 OPTIMAL_START_ET = "10:00"    # ET optimal window start
 OPTIMAL_END_ET   = "15:00"    # ET optimal window end
 ENFORCE_WINDOW   = True       # Block orders outside optimal window
 
 # ── IBKR Connection ──
-DEFAULT_HOST = "127.0.0.1"
+TWS_LIVE     = 7496
 TWS_PAPER    = 7497
+GW_LIVE      = 4001
 GW_PAPER     = 4002
-CLIENT_ID    = 3
+CLIENT_ID    = 7           # Unique ID for this script's connection
+DEFAULT_HOST = "127.0.0.1"
 
 # ── Scanner constants ──
 DTE_COMBOS   = [(30, 60), (30, 90), (60, 90)]  # legacy — kept for retro-compat
@@ -107,6 +109,12 @@ BASE_URL = "https://eodhd.com/api"
 THETADATA_URL = "http://127.0.0.1:25503"
 THETA_TERMINAL_JAR = ROOT / "ThetaTerminal.jar"
 THETA_CREDS_FILE   = ROOT / "creds.txt"
+
+# ThetaData WebSocket (real-time quotes for execution pricing)
+THETADATA_WS_URL          = "ws://127.0.0.1:25520/v1/events"
+THETADATA_WS_QUOTE_TIMEOUT  = 10.0  # seconds to wait for a single leg quote
+THETADATA_WS_SPREAD_TIMEOUT = 15.0  # seconds to wait for all spread leg quotes
+THETADATA_WS_RECONNECT_MAX  = 5     # max reconnect attempts before giving up
 
 
 # ── Logging ──
@@ -163,21 +171,48 @@ _theta_proc = None
 _theta_log_handle = None
 
 
-def ensure_theta_terminal(timeout=30):
+def _kill_stale_theta():
+    """Kill any stale Theta Terminal Java processes occupying port 25503."""
+    log = get_logger("config")
+    try:
+        # Find PID holding port 25503
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True, text=True, timeout=5,
+            encoding="utf-8", errors="replace",
+        )
+        for line in result.stdout.splitlines():
+            if ":25503" in line and "LISTENING" in line:
+                pid = line.strip().split()[-1]
+                if pid.isdigit() and int(pid) > 0:
+                    log.info("Killing stale Theta Terminal (PID %s)", pid)
+                    subprocess.run(["taskkill", "/F", "/PID", pid],
+                                   capture_output=True, timeout=5)
+                    time.sleep(2)  # let port release
+                    return True
+    except Exception as ex:
+        log.warning("Could not kill stale Theta Terminal: %s", ex)
+    return False
+
+
+def ensure_theta_terminal(timeout=45):
     """Launch Theta Terminal if not already running. Returns True if available.
 
     - Checks if already listening on port 25503
-    - If not, launches ThetaTerminal.jar in the background
+    - If not, kills any stale process and launches ThetaTerminal.jar
     - Waits up to ``timeout`` seconds for it to become responsive
     - Returns False (with a warning) if Java is missing or jar not found
     """
     global _theta_proc, _theta_log_handle
     log = get_logger("config")
 
-    # Already running?
+    # Already running and healthy?
     if _theta_terminal_alive():
         log.info("Theta Terminal already running")
         return True
+
+    # Port might be held by a zombie process — kill it
+    _kill_stale_theta()
 
     # Find jar
     if not THETA_TERMINAL_JAR.exists():

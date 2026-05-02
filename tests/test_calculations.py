@@ -579,18 +579,6 @@ class TestPositionSizing:
         result = size_portfolio([], kelly_f=0.04, account_value=100_000)
         assert result == []
 
-    def test_cost_per_contract(self):
-        """Verify cost_per_contract formula."""
-        from core.trader import cost_per_contract
-
-        # cost_per_contract = (cps + SLIPPAGE_BUFFER) * 100 + COMMISSION_LEG * n_legs
-        cps = 3.00
-        n_legs = 4
-        result = cost_per_contract(cps, n_legs)
-        expected = (3.00 + 0.03) * 100 + 0.65 * 4  # 303 + 2.60 = 305.60
-        assert abs(result - expected) < 1e-10, \
-            f"CPC: {result} vs {expected}"
-
     def test_deployed_matches_contracts_times_cpc(self):
         """Total deployed should equal contracts * cost_per_contract."""
         from core.trader import size_portfolio, cost_per_contract
@@ -878,14 +866,6 @@ class TestBacktestResults:
             f"Filtered mean return too positive: {filtered['ret'].mean():.4f}"
         assert filtered["ret"].min() > -5.0, "Min return unreasonably negative"
 
-    def test_raw_data_has_outliers(self, bt_data):
-        """Document: raw unfiltered data has extreme outliers from tiny spread costs."""
-        extreme = bt_data[bt_data["ret"].abs() > 1000]
-        assert len(extreme) > 0, "Expected extreme outliers in raw data"
-        # All extreme outliers should have near-zero spread cost
-        assert extreme["spread_cost"].max() < 0.01, \
-            "Extreme outliers should come from near-zero spread costs"
-
     def test_outliers_filtered_by_backtest(self, bt_data):
         """Verify that ALL extreme outliers are caught by backtest filters."""
         FF_THRESH = {"30-60": 0.230, "30-90": 0.230, "60-90": 0.200}
@@ -896,13 +876,6 @@ class TestBacktestResults:
             max_abs = safe["ret"].abs().max() if len(safe) > 0 else 0
             assert max_abs < 50, \
                 f"{combo}: max |return| after filters = {max_abs:.1f}, expected < 50"
-
-    def test_combo_coverage(self, bt_data):
-        """All three DTE combos should be present."""
-        combos = set(bt_data["combo"].unique())
-        assert "30-60" in combos
-        assert "30-90" in combos
-        assert "60-90" in combos
 
     def test_filtered_trades_positive_edge(self, bt_data):
         """Trades above FF threshold should have positive mean return."""

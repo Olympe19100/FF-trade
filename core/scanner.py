@@ -2,7 +2,7 @@
 Daily Scanner — Forward Factor Double Calendar Spread Signals
 
 Three modes:
-  default: ThetaData real-time (Theta Terminal on localhost:25503, EODHD fallback)
+  default: ThetaData real-time (Theta Terminal on localhost:25503)
   --ibkr : Live data from IBKR (requires paid market data subscription)
 
 Workflow: Scan all 500 tickers for FF signals → place orders on IBKR
@@ -31,7 +31,7 @@ from core.config import (
     OUTPUT, DB, API_KEY, BASE_URL, THETADATA_URL,
     FRONT_DTE_MIN, FRONT_DTE_MAX, BACK_DTE_MIN, BACK_DTE_MAX, MIN_DTE_GAP,
     STRIKE_PCT, TARGET_DELTA, FF_THRESHOLD_DEFAULT,
-    MIN_COST, MIN_OI_LEG, MIN_MID, TOP_N, MAX_WORKERS,
+    MIN_COST, MIN_OI_LEG, MIN_MID, BA_PCT_MAX, TOP_N, MAX_WORKERS,
     get_http_session, get_logger,
 )
 from core.pricing import (
@@ -63,26 +63,145 @@ def get_sp500_tickers() -> list[str]:
     return tickers
 
 
-def get_earnings_dates(tickers: list[str], days_ahead: int = 120) -> dict[str, np.ndarray]:
+def _sync_earnings_to_db(rows: list[dict]) -> int:
+    """Persist EODHD earnings rows into the DB (upsert). Returns count of new rows."""
+    if not rows:
+        return 0
+    conn = sqlite3.connect(str(DB))
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS earnings "
+        "(root TEXT, report_date INTEGER, PRIMARY KEY (root, report_date))"
+    )
+    inserted = 0
+    for r in rows:
+        try:
+            cur.execute(
+                "INSERT OR IGNORE INTO earnings (root, report_date) VALUES (?, ?)",
+                (r["root"], r["report_date"]),
+            )
+            inserted += cur.rowcount
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+    return inserted
+
+
+def _fetch_earnings_ibkr(ib: Any, tickers: list[str]) -> list[dict]:
+    """Fetch next earnings date from IBKR CalendarReport for tickers missing EODHD data.
+
+    Returns list of {"root": ticker, "report_date": YYYYMMDD_int}.
+    """
+    import xml.etree.ElementTree as ET
+
+    results = []
+    for t in tickers:
+        try:
+            from ib_insync import Stock
+            stock = Stock(t, "SMART", "USD")
+            ib.qualifyContracts(stock)
+            if stock.conId == 0:
+                continue
+            xml_str = ib.reqFundamentalData(stock, "CalendarReport")
+            ib.sleep(0.5)  # rate limit
+            if not xml_str:
+                continue
+            root_el = ET.fromstring(xml_str)
+            # Search broadly for earnings-related date fields
+            date_str = None
+            for tag in ("nextReportDate", "NextEarningsDate", "reportDate"):
+                el = root_el.find(f".//{tag}")
+                if el is not None and el.text:
+                    date_str = el.text.strip()
+                    break
+            # Also search for <Event type="Earnings"> with a date attribute
+            if not date_str:
+                for ev in root_el.iter("Event"):
+                    if ev.get("type", "").lower() == "earnings":
+                        date_str = ev.get("date") or ev.text
+                        if date_str:
+                            date_str = date_str.strip()
+                            break
+            if not date_str:
+                continue
+            # Parse date: try YYYY-MM-DD, MM/DD/YYYY, YYYYMMDD
+            rd_int = None
+            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y%m%d"):
+                try:
+                    dt = datetime.strptime(date_str, fmt)
+                    rd_int = int(dt.strftime("%Y%m%d"))
+                    break
+                except ValueError:
+                    continue
+            if rd_int:
+                results.append({"root": t, "report_date": rd_int})
+                log.debug("IBKR earnings %s: %d", t, rd_int)
+        except Exception as ex:
+            log.debug("IBKR earnings fetch failed for %s: %s", t, ex)
+            continue
+    return results
+
+
+def _project_earnings_from_history(tickers: list[str]) -> list[dict]:
+    """Project next earnings date from historical DB data using median gap.
+
+    Requires at least 4 historical dates per ticker.
+    Returns list of {"root": ticker, "report_date": YYYYMMDD_int}.
+    Does NOT persist projections to DB.
+    """
+    results = []
+    try:
+        conn = sqlite3.connect(str(DB))
+        for t in tickers:
+            try:
+                rows = pd.read_sql_query(
+                    "SELECT report_date FROM earnings WHERE root = ? "
+                    "ORDER BY report_date DESC LIMIT 8",
+                    conn, params=(t,),
+                )
+                if len(rows) < 4:
+                    continue
+                dates = sorted(rows["report_date"].astype(int).tolist())
+                # Compute gaps in days between consecutive dates
+                gaps = []
+                for i in range(1, len(dates)):
+                    d0 = datetime.strptime(str(dates[i - 1]), "%Y%m%d")
+                    d1 = datetime.strptime(str(dates[i]), "%Y%m%d")
+                    gaps.append((d1 - d0).days)
+                if not gaps:
+                    continue
+                median_gap = int(np.median(gaps))
+                last_date = datetime.strptime(str(dates[-1]), "%Y%m%d")
+                projected = last_date + timedelta(days=median_gap)
+                if projected > datetime.now():
+                    rd_int = int(projected.strftime("%Y%m%d"))
+                    results.append({"root": t, "report_date": rd_int})
+                    log.info("Projected %s: %d (median gap %dd from last %d)",
+                             t, rd_int, median_gap, dates[-1])
+            except Exception as ex:
+                log.debug("Projection failed for %s: %s", t, ex)
+                continue
+        conn.close()
+    except Exception as ex:
+        log.warning("Projection DB error: %s", ex)
+    return results
+
+
+def get_earnings_dates(tickers: list[str], days_ahead: int = 120, ib: Any = None) -> dict[str, np.ndarray]:
     """Get upcoming earnings dates from DB + EODHD calendar.
 
-    Only keeps earnings for tickers in the scan universe.
+    Fetches from EODHD, persists new dates into DB (auto-sync),
+    then reads everything back from DB for the scan.
     """
     ticker_set = set(tickers)
-    conn = sqlite3.connect(str(DB))
     today_int = int(datetime.now().strftime("%Y%m%d"))
     future_int = int((datetime.now() + timedelta(days=days_ahead)).strftime("%Y%m%d"))
 
-    df = pd.read_sql_query(
-        f"SELECT root, report_date FROM earnings "
-        f"WHERE report_date >= {today_int} AND report_date <= {future_int}",
-        conn
-    )
-    conn.close()
-
-    # Also try EODHD calendar for more up-to-date data
+    # 1. Fetch from EODHD and persist into DB
     today_str = datetime.now().strftime("%Y-%m-%d")
     future_str = (datetime.now() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+    eodhd_rows = []
     try:
         sess = _get_session()
         url = (f"{BASE_URL}/calendar/earnings?"
@@ -90,18 +209,29 @@ def get_earnings_dates(tickers: list[str], days_ahead: int = 120) -> dict[str, n
         resp = sess.get(url, timeout=30)
         if resp.status_code == 200:
             data = resp.json()
-            rows = []
             for e in data.get("earnings", []):
                 ticker = e.get("code", "").replace(".US", "")
                 rd = e.get("report_date", "")
-                if ticker in ticker_set and rd:
-                    rows.append({"root": ticker, "report_date": int(rd.replace("-", ""))})
-            if rows:
-                df = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
+                if ticker and rd:
+                    eodhd_rows.append({"root": ticker, "report_date": int(rd.replace("-", ""))})
+            new_count = _sync_earnings_to_db(eodhd_rows)
+            if new_count > 0:
+                log.info("Earnings DB updated: %d new dates from EODHD", new_count)
+        else:
+            log.warning("EODHD calendar HTTP %d", resp.status_code)
     except Exception as ex:
         log.warning("EODHD calendar fetch failed: %s", ex)
 
-    # Build lookup: root -> sorted array of earnings dates (only scan universe)
+    # 2. Read from DB (now includes fresh EODHD data)
+    conn = sqlite3.connect(str(DB))
+    df = pd.read_sql_query(
+        f"SELECT root, report_date FROM earnings "
+        f"WHERE report_date >= {today_int} AND report_date <= {future_int}",
+        conn
+    )
+    conn.close()
+
+    # 3. Build lookup: root -> sorted array of earnings dates (only scan universe)
     earn_by_root = {}
     if not df.empty:
         df["report_date"] = df["report_date"].astype(int)
@@ -109,7 +239,39 @@ def get_earnings_dates(tickers: list[str], days_ahead: int = 120) -> dict[str, n
         for root, grp in df.groupby("root"):
             earn_by_root[root] = np.sort(grp["report_date"].values)
 
-    log.info("Earnings dates loaded: %d tickers", len(earn_by_root))
+    # 4. Find tickers missing earnings data
+    missing = [t for t in tickers if t not in earn_by_root]
+
+    # 5. IBKR CalendarReport fallback
+    n_ibkr = 0
+    if missing and ib is not None:
+        try:
+            ibkr_rows = _fetch_earnings_ibkr(ib, missing)
+            if ibkr_rows:
+                _sync_earnings_to_db(ibkr_rows)
+                for r in ibkr_rows:
+                    root, rd = r["root"], r["report_date"]
+                    if today_int <= rd <= future_int:
+                        earn_by_root[root] = np.array([rd])
+                        n_ibkr += 1
+                missing = [t for t in tickers if t not in earn_by_root]
+        except Exception as ex:
+            log.warning("IBKR earnings cascade failed: %s", ex)
+
+    # 6. Historical projection fallback
+    n_projected = 0
+    if missing:
+        proj_rows = _project_earnings_from_history(missing)
+        for r in proj_rows:
+            root, rd = r["root"], r["report_date"]
+            if today_int <= rd <= future_int:
+                earn_by_root[root] = np.array([rd])
+                n_projected += 1
+        missing = [t for t in tickers if t not in earn_by_root]
+
+    n_eodhd = len(earn_by_root) - n_ibkr - n_projected
+    log.info("Earnings: %d EODHD, %d IBKR, %d projected, %d unknown",
+             n_eodhd, n_ibkr, n_projected, len(missing))
     return earn_by_root
 
 
@@ -129,7 +291,7 @@ def has_earnings_between(root: str, start_int: int, end_int: int, earn_by_root: 
 def fetch_option_chain_ibkr(ib: Any, ticker: str, today: datetime) -> tuple[float, pd.DataFrame]:
     """Fetch option chain from IBKR (live or delayed 15min).
 
-    Returns (stock_price, DataFrame) with same format as EODHD version.
+    Returns (stock_price, DataFrame) with columns: exp_date, type, strike, bid, ask, iv, volume, open_interest.
     Only fetches ATM options in relevant DTE windows for speed.
     """
     from ib_insync import Stock, Option
@@ -297,7 +459,7 @@ def _thetadata_stock_price(ticker: str) -> float:
     end = today.strftime("%Y-%m-%d")
     url = (f"{THETADATA_URL}/v3/stock/history/eod"
            f"?symbol={ticker}&start_date={start}&end_date={end}&format=json")
-    resp = requests.get(url, timeout=10)
+    resp = requests.get(url, timeout=60)
     resp.raise_for_status()
     data = resp.json()
     records = data.get("response", []) if isinstance(data, dict) else data
@@ -311,7 +473,7 @@ def _thetadata_stock_price(ticker: str) -> float:
 def fetch_option_chain_thetadata(ticker: str) -> tuple[float, pd.DataFrame]:
     """Fetch option chain from ThetaData REST API v3 (local Theta Terminal).
 
-    Returns (stock_price, DataFrame) — same format as EODHD version.
+    Returns (stock_price, DataFrame) with columns: exp_date, type, strike, bid, ask, iv, volume, open_interest.
     Requires Theta Terminal running on localhost:25503.
 
     Uses STANDARD plan endpoints:
@@ -327,21 +489,13 @@ def fetch_option_chain_thetadata(ticker: str) -> tuple[float, pd.DataFrame]:
     # 2. Option quotes — all expirations in one call
     url = (f"{THETADATA_URL}/v3/option/snapshot/quote"
            f"?symbol={ticker}&expiration=*&format=json")
-    resp = requests.get(url, timeout=30)
+    resp = requests.get(url, timeout=120)
     resp.raise_for_status()
     data = resp.json()
 
     records = data.get("response", []) if isinstance(data, dict) else data
     if not records:
         return stock_px, pd.DataFrame()
-
-    # v3 snapshot/quote response:
-    # { "response": [
-    #     { "contract": {"expiration":"2026-05-15","symbol":"AAPL",
-    #                     "strike":200.000,"right":"PUT"},
-    #       "data": [{"bid":3.40,"ask":3.60,"timestamp":"..."}] },
-    #     ...
-    # ]}
 
     all_rows = []
     for item in records:
@@ -352,16 +506,20 @@ def fetch_option_chain_thetadata(ticker: str) -> tuple[float, pd.DataFrame]:
         quote = data_arr[0]  # Latest snapshot
 
         exp_date = contract.get("expiration", "")
-        if not exp_date or len(str(exp_date)) < 8:
+        if not exp_date:
             continue
-        exp_date = str(exp_date)[:10]
+        # Support both YYYY-MM-DD and YYYYMMDD
+        exp_date_str = str(exp_date)
+        if "-" not in exp_date_str and len(exp_date_str) == 8:
+            exp_date_str = f"{exp_date_str[:4]}-{exp_date_str[4:6]}-{exp_date_str[6:8]}"
+        exp_date_str = exp_date_str[:10]
 
         try:
             strike = float(contract.get("strike", 0))
         except (TypeError, ValueError):
             continue
 
-        right = contract.get("right", "").upper()
+        right = str(contract.get("right", "")).upper()
         if right in ("CALL", "C"):
             opt_type = "call"
         elif right in ("PUT", "P"):
@@ -372,23 +530,20 @@ def fetch_option_chain_thetadata(ticker: str) -> tuple[float, pd.DataFrame]:
         try:
             bid = float(quote.get("bid") or 0)
             ask = float(quote.get("ask") or 0)
+            # If one side is missing, use a tiny value or the other side to allow mid-pricing
+            # but we will filter for real liquidity later
         except (TypeError, ValueError):
             continue
 
-        if bid < 0:
-            bid = 0
-        if ask < 0:
-            ask = 0
-
         all_rows.append({
-            "exp_date": exp_date,
+            "exp_date": exp_date_str,
             "type": opt_type,
             "strike": strike,
-            "bid": bid,
-            "ask": ask,
-            "iv": 0.0,           # Computed below
-            "volume": 0,
-            "open_interest": 0,
+            "bid": max(0.0, bid),
+            "ask": max(0.0, ask),
+            "iv": 0.0,
+            "volume": int(quote.get("volume") or 0),
+            "open_interest": int(quote.get("open_interest") or 0),
         })
 
     if not all_rows:
@@ -531,18 +686,22 @@ def scan_ticker_from_chain(ticker: str, stock_px: float, chain: pd.DataFrame, ea
     if stock_px <= 0 or chain.empty:
         return results
 
-    # Compute DTE
+    # Compute DTE and Mid
     chain = chain.copy()
     chain["exp_dt"] = pd.to_datetime(chain["exp_date"], errors="coerce")
-    chain["dte"] = (chain["exp_dt"] - pd.Timestamp(today)).dt.days
+    chain["dte"] = (chain["exp_dt"] - pd.Timestamp(today).normalize()).dt.days
 
-    # Filter: valid bid/ask/iv, DTE 15-120
+    # Relaxed filter: at least one side must be > 0 and DTE 15-120
     chain = chain[
-        (chain["bid"] > 0) & (chain["ask"] > 0) &
-        (chain["iv"] > 0) &
+        ((chain["bid"] > 0) | (chain["ask"] > 0)) &
         (chain["dte"] >= 15) & (chain["dte"] <= 120)
     ].copy()
     chain["mid"] = (chain["bid"] + chain["ask"]) / 2
+    # If one side is 0, mid is half the other side (conservative)
+    mask_zero_bid = (chain["bid"] == 0) & (chain["ask"] > 0)
+    chain.loc[mask_zero_bid, "mid"] = chain.loc[mask_zero_bid, "ask"] # Pay the full ask if no bid
+    mask_zero_ask = (chain["ask"] == 0) & (chain["bid"] > 0)
+    chain.loc[mask_zero_ask, "mid"] = chain.loc[mask_zero_ask, "bid"] # Receive only bid if no ask
 
     if chain.empty:
         return results
@@ -584,28 +743,35 @@ def scan_ticker_from_chain(ticker: str, stock_px: float, chain: pd.DataFrame, ea
                  ticker, len(pairs), len(front_exps), len(back_exps))
 
     for front_exp, front_dte_target, back_exp, back_dte_target in pairs:
-        # Front calls: exact expiration match, near ATM
-        front = calls[
-            (calls["exp_date"] == front_exp) &
-            ((calls["strike"] - stock_px).abs() / stock_px <= STRIKE_PCT)
+        # 1. Find common call strikes between both expiries
+        f_calls = calls[calls["exp_date"] == front_exp].copy()
+        b_calls = calls[calls["exp_date"] == back_exp].copy()
+        
+        common_call_strikes = set(f_calls["strike"]).intersection(set(b_calls["strike"]))
+        
+        if not common_call_strikes:
+            continue
+            
+        # 2. Filter front calls to common strikes and compute deltas
+        front = f_calls[
+            f_calls["strike"].isin(common_call_strikes) &
+            ((f_calls["strike"] - stock_px).abs() / stock_px <= STRIKE_PCT)
         ].copy()
+        
         if front.empty:
             continue
 
-        # Compute call delta for all candidates via IV + BS
+        # Compute call delta for all candidates
         f_T = front["dte"].values / 365.0
         f_iv = front["iv"].values
-        f_delta = bs_delta_vec(
-            np.full(len(front), stock_px),
-            front["strike"].values,
-            f_T, f_iv
-        )
+        f_delta = bs_delta_vec(np.full(len(front), stock_px), front["strike"].values, f_T, f_iv)
         front["call_delta"] = f_delta
         front = front.dropna(subset=["call_delta"])
+        
         if front.empty:
             continue
 
-        # Select strike closest to TARGET_DELTA (35-delta OTM call, above S)
+        # 3. Select strike closest to TARGET_DELTA (35-delta)
         front["delta_diff"] = (front["call_delta"] - TARGET_DELTA).abs()
         front_best = front.loc[front["delta_diff"].idxmin()]
 
@@ -623,20 +789,9 @@ def scan_ticker_from_chain(ticker: str, stock_px: float, chain: pd.DataFrame, ea
         if front_mid < MIN_MID:
             continue
 
-        # Back call: exact expiration match, same strike (within 2%)
-        back = calls[calls["exp_date"] == back_exp].copy()
-        if back.empty:
-            continue
-
-        back_same = back[(back["strike"] - strike).abs() < 0.01]
-        if back_same.empty:
-            back["sdiff"] = (back["strike"] - strike).abs()
-            back_best = back.loc[back["sdiff"].idxmin()]
-            if back_best["sdiff"] / strike > 0.02:
-                continue
-        else:
-            back_best = back_same.iloc[0]
-
+        # 4. Back call: Use the same common strike
+        back_best = b_calls[b_calls["strike"] == strike].iloc[0]
+        
         back_iv = back_best["iv"]
         back_mid = back_best["mid"]
         back_dte = int(back_best["dte"])
@@ -665,55 +820,55 @@ def scan_ticker_from_chain(ticker: str, stock_px: float, chain: pd.DataFrame, ea
         if has_earnings_between(ticker, today_int, back_exp_int, earn_by_root):
             continue
 
-        # ── Put leg: select 35-delta OTM put strike (below S) ──
+        # ── Put leg: find best common strike available in BOTH expirations ──
         put_cost = np.nan
         combined_cost = np.nan
         put_strike_val = np.nan
         put_delta_val = np.nan
 
-        put_front_cands = puts[
-            (puts["exp_date"] == front_exp) &
-            ((puts["strike"] - stock_px).abs() / stock_px <= STRIKE_PCT)
-        ].copy()
+        # 1. Get all puts for both expiries
+        f_puts = puts[puts["exp_date"] == front_exp].copy()
+        b_puts = puts[puts["exp_date"] == back_exp].copy()
 
-        if not put_front_cands.empty:
-            pf_T = put_front_cands["dte"].values / 365.0
-            pf_S = np.full(len(put_front_cands), stock_px)
-            pf_K = put_front_cands["strike"].values
-            call_equiv = put_call_parity_call_equiv(
-                put_front_cands["mid"].values, stock_px, pf_K, pf_T,
-            )
-
-            pf_iv = implied_vol_vec(call_equiv, pf_S, pf_K, pf_T)
-
-            pf_call_delta = bs_delta_vec(pf_S, pf_K, pf_T, pf_iv)
-            put_delta_abs = 1.0 - pf_call_delta
-
-            put_front_cands["put_delta_abs"] = put_delta_abs
-            put_front_cands = put_front_cands.dropna(subset=["put_delta_abs"])
-
-            if not put_front_cands.empty:
-                put_front_cands["delta_diff"] = (
-                    put_front_cands["put_delta_abs"] - TARGET_DELTA
-                ).abs()
-                pf_best = put_front_cands.loc[
-                    put_front_cands["delta_diff"].idxmin()
-                ]
-                put_strike_val = float(pf_best["strike"])
-                put_delta_val = float(pf_best["put_delta_abs"])
-                pf_oi = int(pf_best.get("open_interest", 0)) if has_oi else -1
-
-                put_back_cands = puts[
-                    (puts["exp_date"] == back_exp) &
-                    ((puts["strike"] - put_strike_val).abs() / put_strike_val <= 0.02)
-                ]
-                if not put_back_cands.empty:
-                    pb_best = put_back_cands.loc[
-                        (put_back_cands["strike"] - put_strike_val).abs().idxmin()
-                    ]
+        if not f_puts.empty and not b_puts.empty:
+            # 2. Find common strikes
+            common_strikes = set(f_puts["strike"]).intersection(set(b_puts["strike"]))
+            
+            if common_strikes:
+                # 3. Filter front puts to common strikes and compute deltas
+                f_cands = f_puts[f_puts["strike"].isin(common_strikes)].copy()
+                
+                pf_T = f_cands["dte"].values / 365.0
+                pf_S = np.full(len(f_cands), stock_px)
+                pf_K = f_cands["strike"].values
+                
+                # Approximate IV/Delta for candidate strikes
+                f_cands["call_equiv"] = put_call_parity_call_equiv(
+                    f_cands["mid"].values, stock_px, pf_K, pf_T,
+                )
+                f_cands["iv_est"] = implied_vol_vec(f_cands["call_equiv"].values, pf_S, pf_K, pf_T)
+                f_cands["put_delta_abs"] = 1.0 - bs_delta_vec(pf_S, pf_K, pf_T, f_cands["iv_est"].values)
+                
+                f_cands = f_cands.dropna(subset=["put_delta_abs"])
+                
+                if not f_cands.empty:
+                    # 4. Select common strike closest to Target Delta
+                    f_cands["delta_diff"] = (f_cands["put_delta_abs"] - TARGET_DELTA).abs()
+                    pf_best = f_cands.loc[f_cands["delta_diff"].idxmin()]
+                    
+                    put_strike_val = float(pf_best["strike"])
+                    put_delta_val = float(pf_best["put_delta_abs"])
+                    
+                    # 5. Get back leg at the SAME common strike
+                    pb_best = b_puts[b_puts["strike"] == put_strike_val].iloc[0]
+                    
+                    # Liquidity checks
+                    pf_oi = int(pf_best.get("open_interest", 0)) if has_oi else -1
                     pb_oi = int(pb_best.get("open_interest", 0)) if has_oi else -1
+                    
                     pf_ok = (not has_oi) or pf_oi >= MIN_OI_LEG
                     pb_ok = (not has_oi) or pb_oi >= MIN_OI_LEG
+                    
                     if pf_ok and pb_ok:
                         pf_mid = pf_best["mid"]
                         pb_mid = (pb_best["bid"] + pb_best["ask"]) / 2
@@ -731,6 +886,14 @@ def scan_ticker_from_chain(ticker: str, stock_px: float, chain: pd.DataFrame, ea
             ba_pct = dbl_ba / (2 * combined_cost) if combined_cost > 0 else 999.0
         else:
             ba_pct = call_ba_pct
+
+        # Bid-ask filter: reject illiquid spreads (same as backtest)
+        if ba_pct > BA_PCT_MAX:
+            continue
+
+        # Double Calendar Filter: Only keep if both legs exist and were priced
+        if np.isnan(put_cost) or put_cost <= 0 or np.isnan(combined_cost):
+            continue
 
         combo_label = f"{front_dte}-{back_dte}"
         results.append({
@@ -772,22 +935,24 @@ def scan_ticker_from_chain(ticker: str, stock_px: float, chain: pd.DataFrame, ea
     return results
 
 
-# ThetaData first, EODHD fallback
+# ThetaData only (no EODHD fallback)
 def scan_ticker(ticker: str, earn_by_root: dict[str, np.ndarray], today: datetime, verbose: bool = False) -> list[dict]:
-    """Scan one ticker — ThetaData first, EODHD fallback."""
+    """Scan one ticker via ThetaData."""
     try:
         stock_px, chain = fetch_option_chain_thetadata(ticker)
         if stock_px > 0 and not chain.empty:
             return scan_ticker_from_chain(ticker, stock_px, chain, earn_by_root, today, verbose)
-    except Exception:
-        pass
-    # Fallback to EODHD
-    stock_px, chain = fetch_option_chain_eodhd(ticker)
-    return scan_ticker_from_chain(ticker, stock_px, chain, earn_by_root, today, verbose)
+        if verbose:
+            log.warning("ThetaData: no data for %s (px=%.2f, chain=%d rows)",
+                        ticker, stock_px, len(chain))
+        return []
+    except Exception as ex:
+        log.warning("ThetaData failed for %s: %s", ticker, ex)
+        return []
 
 
 def _scan_one(args: tuple) -> tuple[str, list[dict]]:
-    """Worker function for parallel scanning (ThetaData + EODHD fallback)."""
+    """Worker function for parallel scanning (ThetaData)."""
     ticker, earn_by_root, today, verbose = args
     signals = scan_ticker(ticker, earn_by_root, today, verbose=verbose)
     with _progress_lock:
@@ -806,7 +971,7 @@ def _scan_one(args: tuple) -> tuple[str, list[dict]]:
 def run_scanner_ibkr(ib: Any, tickers: list[str] | None = None, test_mode: bool = False) -> pd.DataFrame:
     """Scanner using IBKR live data. Sequential but accurate prices.
 
-    ~3s/ticker = ~25 min for 500 tickers (vs 5 min EODHD but real-time).
+    ~3s/ticker = ~25 min for 500 tickers (real-time data).
     """
     today = datetime.now()
     t0 = time.time()
@@ -829,7 +994,7 @@ def run_scanner_ibkr(ib: Any, tickers: list[str] | None = None, test_mode: bool 
     log.info("Min midpoint: $%.2f", MIN_MID)
 
     # Load earnings
-    earn_by_root = get_earnings_dates(tickers)
+    earn_by_root = get_earnings_dates(tickers, ib=ib)
 
     all_signals = []
     n_errors = 0
@@ -880,14 +1045,14 @@ def run_scanner_ibkr(ib: Any, tickers: list[str] | None = None, test_mode: bool 
 
 
 # ═══════════════════════════════════════════════════════════════
-# Main Scanner — EODHD mode (parallel, delayed data)
+# Main Scanner — ThetaData mode (parallel, real-time)
 # ═══════════════════════════════════════════════════════════════
 
 def run_scanner(tickers: list[str] | None = None, test_mode: bool = False, ib: Any | None = None) -> pd.DataFrame:
     """Main scanner entry point.
 
     If ib is provided, uses IBKR live data.
-    Otherwise falls back to EODHD parallel scan.
+    Otherwise uses ThetaData parallel scan.
     """
     if ib is not None:
         return run_scanner_ibkr(ib, tickers, test_mode)
@@ -913,7 +1078,7 @@ def run_scanner(tickers: list[str] | None = None, test_mode: bool = False, ib: A
     log.info("Min OI per leg: %d", MIN_OI_LEG)
     log.info("Min midpoint: $%.2f", MIN_MID)
 
-    # Load earnings
+    # Load earnings (ib=None in ThetaData mode — cascade skips IBKR, goes to projection)
     earn_by_root = get_earnings_dates(tickers)
 
     # Reset progress counter
