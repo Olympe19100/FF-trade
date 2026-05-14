@@ -1,5 +1,5 @@
 """
-Daily Scanner — Forward Factor Double Calendar Spread Signals
+Daily Scanner — Forward Factor Calendar Spread Signals (Call Only)
 
 Three modes:
   default: ThetaData real-time (Theta Terminal on localhost:25503)
@@ -22,7 +22,6 @@ import time
 import sys
 import asyncio
 import threading
-from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -32,10 +31,10 @@ from core.config import (
     FRONT_DTE_MIN, FRONT_DTE_MAX, BACK_DTE_MIN, BACK_DTE_MAX, MIN_DTE_GAP,
     STRIKE_PCT, TARGET_DELTA, FF_THRESHOLD_DEFAULT,
     MIN_COST, MIN_OI_LEG, MIN_MID, BA_PCT_MAX, TOP_N, MAX_WORKERS,
+    MAX_UNDERLYING_BA,
     get_http_session, get_logger,
 )
 from core.pricing import (
-    RISK_FREE_RATE,
     implied_vol_vec, bs_delta_vec, compute_ff,
     put_call_parity_call_equiv,
 )
@@ -242,11 +241,16 @@ def get_earnings_dates(tickers: list[str], days_ahead: int = 120, ib: Any = None
     # 4. Find tickers missing earnings data
     missing = [t for t in tickers if t not in earn_by_root]
 
-    # 5. IBKR CalendarReport fallback
+    # 5. IBKR CalendarReport fallback (cap at 200 to avoid API spam)
     n_ibkr = 0
+    MAX_IBKR_EARNINGS = 200
     if missing and ib is not None:
         try:
-            ibkr_rows = _fetch_earnings_ibkr(ib, missing)
+            ibkr_batch = missing[:MAX_IBKR_EARNINGS]
+            if len(missing) > MAX_IBKR_EARNINGS:
+                log.info("Earnings IBKR: capped at %d/%d (skipping %d)",
+                         MAX_IBKR_EARNINGS, len(missing), len(missing) - MAX_IBKR_EARNINGS)
+            ibkr_rows = _fetch_earnings_ibkr(ib, ibkr_batch)
             if ibkr_rows:
                 _sync_earnings_to_db(ibkr_rows)
                 for r in ibkr_rows:
@@ -284,38 +288,78 @@ def has_earnings_between(root: str, start_int: int, end_int: int, earn_by_root: 
     return idx < len(edates) and edates[idx] <= end_int
 
 
+def _get_underlying_spread(ticker: str) -> float | None:
+    """Get underlying stock bid-ask spread via ThetaData REST (Huh & Lin 2013).
+
+    Returns spread in dollars, or None if unavailable.
+    """
+    try:
+        url = (f"{THETADATA_URL}/v3/stock/snapshot/quote"
+               f"?symbol={ticker}&format=json")
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        records = data.get("response", []) if isinstance(data, dict) else data
+        if not records:
+            return None
+        quote = records[0] if isinstance(records, list) else records
+        # Handle nested data arrays (ThetaData v3 format)
+        if isinstance(quote, dict) and "data" in quote:
+            data_arr = quote["data"]
+            if data_arr:
+                quote = data_arr[0]
+        bid = float(quote.get("bid", 0) or 0)
+        ask = float(quote.get("ask", 0) or 0)
+        if bid > 0 and ask > bid:
+            return round(ask - bid, 4)
+        return None
+    except Exception as ex:
+        log.debug("Underlying spread fetch failed for %s: %s", ticker, ex)
+        return None
+
+
 # ═══════════════════════════════════════════════════════════════
 # IBKR Option Chain Fetcher
 # ═══════════════════════════════════════════════════════════════
 
-def fetch_option_chain_ibkr(ib: Any, ticker: str, today: datetime) -> tuple[float, pd.DataFrame]:
-    """Fetch option chain from IBKR (live or delayed 15min).
+def _is_monthly_expiration(exp_dt: datetime) -> bool:
+    """True if date is a 3rd Friday (standard monthly option expiration)."""
+    return exp_dt.weekday() == 4 and 15 <= exp_dt.day <= 21
 
-    Returns (stock_price, DataFrame) with columns: exp_date, type, strike, bid, ask, iv, volume, open_interest.
-    Only fetches ATM options in relevant DTE windows for speed.
+
+def fetch_option_chain_ibkr(ib: Any, ticker: str, today: datetime) -> tuple[float, pd.DataFrame, float | None]:
+    """Fetch option chain from IBKR (optimized for speed).
+
+    Optimizations:
+    1. Monthly expirations only (3rd Fridays — most liquid, best FF signals)
+    2. reqSecDefOptParams for valid strikes, qualify only monthly+ATM combos
+    3. Batch size 80 for market data requests
+    4. 1.5s wait for live OPRA data
+    5. Skip stocks < $10 (illiquid options)
+
+    Returns (stock_price, DataFrame, underlying_ba).
     """
     from ib_insync import Stock, Option
 
-    # Enable delayed data if no live subscription
-    ib.reqMarketDataType(4)  # 4 = delayed-frozen (free, 15 min delay)
+    ib.reqMarketDataType(4)  # best available (live > delayed > frozen)
 
-    # 1. Stock price (streaming mode — snapshot not supported with delayed data)
+    # 1. Stock price
     stock = Stock(ticker, "SMART", "USD")
     try:
         ib.qualifyContracts(stock)
     except Exception:
-        return 0, pd.DataFrame()
+        return 0, pd.DataFrame(), None
 
     if stock.conId == 0:
-        return 0, pd.DataFrame()
+        return 0, pd.DataFrame(), None
 
     ib.reqMktData(stock, "", False, False)
-    ib.sleep(2)  # Wait for delayed data to stream in
+    ib.sleep(1.5)
     stk_tk = ib.ticker(stock)
 
     stock_px = 0
+    underlying_ba = None
     if stk_tk:
-        # Try market price first, then last, then close
         for attr in ['marketPrice', 'last', 'close']:
             val = getattr(stk_tk, attr, None)
             if callable(val):
@@ -323,44 +367,68 @@ def fetch_option_chain_ibkr(ib: Any, ticker: str, today: datetime) -> tuple[floa
             if val and val == val and val > 0 and val != float('inf'):
                 stock_px = float(val)
                 break
+        stk_bid = float(stk_tk.bid) if stk_tk.bid and stk_tk.bid > 0 and stk_tk.bid != float('inf') else 0
+        stk_ask = float(stk_tk.ask) if stk_tk.ask and stk_tk.ask > 0 and stk_tk.ask != float('inf') else 0
+        if stk_bid > 0 and stk_ask > stk_bid:
+            underlying_ba = round(stk_ask - stk_bid, 4)
     ib.cancelMktData(stock)
 
-    if stock_px <= 0:
-        return 0, pd.DataFrame()
+    if stock_px <= 0 or stock_px < 10:
+        return 0, pd.DataFrame(), underlying_ba
 
-    # 2. Option chain params
+    # 2. Get available strikes/expirations
     params = ib.reqSecDefOptParams(stock.symbol, "", stock.secType, stock.conId)
     ib.sleep(0.2)
 
     if not params:
-        return stock_px, pd.DataFrame()
+        return stock_px, pd.DataFrame(), underlying_ba
 
-    # Use exchange with most strikes (usually SMART)
     chain = max(params, key=lambda p: len(p.strikes))
 
-    # 3. Filter expirations to DTE 15-120
+    # 3. Filter expirations in DTE range (weeklies + monthlies)
+    #    Front weeklies (15-30 DTE) capture near-term IV crucial for FF.
+    #    Strike increment filter handles contract volume.
     today_dt = datetime(today.year, today.month, today.day)
     valid_exps = []
     for exp_str in chain.expirations:
         try:
             exp_dt = datetime.strptime(exp_str, "%Y%m%d")
-            dte = (exp_dt - today_dt).days
-            if 15 <= dte <= 120:
-                valid_exps.append((exp_str, dte))
         except ValueError:
             continue
+        dte = (exp_dt - today_dt).days
+        if FRONT_DTE_MIN <= dte <= BACK_DTE_MAX:
+            valid_exps.append((exp_str, dte))
 
     if not valid_exps:
-        return stock_px, pd.DataFrame()
+        return stock_px, pd.DataFrame(), underlying_ba
 
-    # 4. Filter strikes to near ATM (10% range for 35-delta OTM strikes)
-    atm_strikes = sorted([s for s in chain.strikes
-                          if abs(s - stock_px) / stock_px <= 0.10])
+    # 4. ATM strikes — filter to standard monthly increments only
+    #    CBOE monthly increment rules:
+    #    Stock >= $500: $25 increments (far monthlies use $25/$50)
+    #    Stock >= $200: $10 increments (monthlies at this level)
+    #    Stock >= $100: $5 increments
+    #    Stock $25-$100: $2.50
+    #    Stock < $25: $1.00
+    all_strikes = sorted([s for s in chain.strikes
+                          if abs(s - stock_px) / stock_px <= STRIKE_PCT])
+    if stock_px >= 500:
+        atm_strikes = [s for s in all_strikes if s % 25 == 0]
+    elif stock_px >= 200:
+        atm_strikes = [s for s in all_strikes if s % 10 == 0]
+    elif stock_px >= 100:
+        atm_strikes = [s for s in all_strikes if s % 5 == 0]
+    else:
+        # Stocks < $100: weeklies use $1, monthlies use $2.50
+        # Keep all strikes — invalid ones just fail to qualify harmlessly
+        atm_strikes = list(all_strikes)
+    # Fallback: if filtering removed everything, use all
+    if not atm_strikes:
+        atm_strikes = all_strikes
 
     if not atm_strikes:
-        return stock_px, pd.DataFrame()
+        return stock_px, pd.DataFrame(), underlying_ba
 
-    # 5. Create option contracts (only relevant combos)
+    # 5. Create + qualify (monthly × ATM = much fewer combos)
     options = []
     for exp_str, dte in valid_exps:
         for strike in atm_strikes:
@@ -368,82 +436,117 @@ def fetch_option_chain_ibkr(ib: Any, ticker: str, today: datetime) -> tuple[floa
                 opt = Option(ticker, exp_str, strike, right, "SMART", "100", "USD")
                 options.append((opt, exp_str, dte))
 
-    # 6. Qualify in batches
-    batch_size = 50
     qualified = []
+    batch_size = 100
     for i in range(0, len(options), batch_size):
         batch_opts = [o[0] for o in options[i:i+batch_size]]
         try:
             ib.qualifyContracts(*batch_opts)
         except Exception:
             pass
-        for j, opt_tuple in enumerate(options[i:i+batch_size]):
-            opt, exp_str, dte = opt_tuple
-            if opt.conId > 0:
+        for opt_tuple in options[i:i+batch_size]:
+            if opt_tuple[0].conId > 0:
                 qualified.append(opt_tuple)
 
     if not qualified:
-        return stock_px, pd.DataFrame()
+        return stock_px, pd.DataFrame(), underlying_ba
 
-    # 7. Request market data via streaming (snapshot not supported with delayed data)
-    snap_batch = 40  # IBKR limit ~100 simultaneous
-    all_rows = []
+    # 6. Request market data in batches
+    #    IBKR paper accounts: 100 concurrent data lines max.
+    #    Back-month options are less frequently quoted — need longer wait.
+    snap_batch = 45       # well under 100-line limit
+    base_wait  = 3.0      # seconds per batch
+    all_rows = {}         # keyed by (exp_str, strike, right) for retry dedup
 
+    def _read_ticker(c, exp_str, dte):
+        tk = ib.ticker(c)
+        if tk is None:
+            return None
+        bid = float(tk.bid) if tk.bid and tk.bid > 0 and tk.bid != float('inf') else 0
+        ask = float(tk.ask) if tk.ask and tk.ask > 0 and tk.ask != float('inf') else 0
+        iv = 0.0
+        if tk.modelGreeks and tk.modelGreeks.impliedVol:
+            iv = float(tk.modelGreeks.impliedVol)
+        elif bid > 0 and ask > 0:
+            mid = (bid + ask) / 2
+            T = dte / 365.0
+            if T > 0 and stock_px > 0:
+                strike_val = float(c.strike)
+                if c.right == "P":
+                    mid_ce = put_call_parity_call_equiv(
+                        np.array([mid]), stock_px, np.array([strike_val]), np.array([T])
+                    )[0]
+                else:
+                    mid_ce = mid
+                iv_arr = implied_vol_vec(
+                    np.array([max(mid_ce, 0.001)]),
+                    np.array([stock_px]),
+                    np.array([strike_val]),
+                    np.array([T]),
+                )
+                iv = float(iv_arr[0]) if not np.isnan(iv_arr[0]) else 0.0
+        vol = int(tk.volume) if tk.volume and tk.volume > 0 else 0
+        exp_fmt = f"{exp_str[:4]}-{exp_str[4:6]}-{exp_str[6:8]}"
+        return {
+            "exp_date": exp_fmt,
+            "type": "call" if c.right == "C" else "put",
+            "strike": float(c.strike),
+            "bid": bid, "ask": ask, "iv": iv,
+            "volume": vol, "open_interest": 0,
+        }
+
+    # Pass 1: batch request
+    empty_contracts = []   # contracts that got 0 data — retry candidates
     for i in range(0, len(qualified), snap_batch):
         batch = qualified[i:i+snap_batch]
-        batch_opts = [q[0] for q in batch]
+        batch_contracts = [q[0] for q in batch]
 
-        # Request streaming data (no generic ticks, no snapshot)
-        for opt in batch_opts:
-            ib.reqMktData(opt, "", False, False)
-        ib.sleep(3)  # Wait for delayed data to arrive
+        for c in batch_contracts:
+            ib.reqMktData(c, "", False, False)
+        ib.sleep(base_wait)
 
-        # Collect data
-        for opt, exp_str, dte in batch:
-            tk = ib.ticker(opt)
-            if tk is None:
+        for c, exp_str, dte in batch:
+            row = _read_ticker(c, exp_str, dte)
+            if row is None:
                 continue
+            key = (exp_str, c.strike, c.right)
+            all_rows[key] = row
+            if row["bid"] == 0 and row["ask"] == 0:
+                empty_contracts.append((c, exp_str, dte))
 
-            bid = float(tk.bid) if tk.bid and tk.bid > 0 and tk.bid != float('inf') else 0
-            ask = float(tk.ask) if tk.ask and tk.ask > 0 and tk.ask != float('inf') else 0
-
-            # Try modelGreeks first, then compute from mid price
-            iv = 0.0
-            if tk.modelGreeks and tk.modelGreeks.impliedVol:
-                iv = float(tk.modelGreeks.impliedVol)
-            elif bid > 0 and ask > 0:
-                # Estimate IV from mid price using simple BS approximation
-                mid = (bid + ask) / 2
-                T = dte / 365.0
-                if T > 0 and stock_px > 0:
-                    strike = float(opt.strike)
-                    # Brenner-Subrahmanyam ATM approximation: IV ≈ mid * sqrt(2*pi/T) / S
-                    iv = mid * np.sqrt(2 * np.pi / T) / stock_px
-
-            vol = int(tk.volume) if tk.volume and tk.volume > 0 else 0
-
-            exp_fmt = f"{exp_str[:4]}-{exp_str[4:6]}-{exp_str[6:8]}"
-            all_rows.append({
-                "exp_date": exp_fmt,
-                "type": "call" if opt.right == "C" else "put",
-                "strike": float(opt.strike),
-                "bid": bid,
-                "ask": ask,
-                "iv": iv,
-                "volume": vol,
-                "open_interest": 0,
-            })
-
-        # Cancel market data
-        for opt in batch_opts:
+        for c in batch_contracts:
             try:
-                ib.cancelMktData(opt)
+                ib.cancelMktData(c)
             except Exception:
                 pass
+        ib.sleep(0.3)
+
+    # Pass 2: retry contracts that got 0 data (back months typically)
+    #   Smaller batch + longer wait gives IBKR time to respond
+    if empty_contracts:
+        retry_batch = 20
+        retry_wait  = 5.0
+        for i in range(0, len(empty_contracts), retry_batch):
+            batch = empty_contracts[i:i+retry_batch]
+            batch_contracts = [q[0] for q in batch]
+            for c in batch_contracts:
+                ib.reqMktData(c, "", False, False)
+            ib.sleep(retry_wait)
+            for c, exp_str, dte in batch:
+                row = _read_ticker(c, exp_str, dte)
+                if row and (row["bid"] > 0 or row["ask"] > 0):
+                    key = (exp_str, c.strike, c.right)
+                    all_rows[key] = row  # overwrite the empty row
+            for c in batch_contracts:
+                try:
+                    ib.cancelMktData(c)
+                except Exception:
+                    pass
+            ib.sleep(0.3)
 
     if all_rows:
-        return stock_px, pd.DataFrame(all_rows)
-    return stock_px, pd.DataFrame()
+        return stock_px, pd.DataFrame(list(all_rows.values())), underlying_ba
+    return stock_px, pd.DataFrame(), underlying_ba
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -550,6 +653,59 @@ def fetch_option_chain_thetadata(ticker: str) -> tuple[float, pd.DataFrame]:
         return stock_px, pd.DataFrame()
 
     df = pd.DataFrame(all_rows)
+
+    # 2b. Fetch OI from separate endpoint (quote endpoint doesn't return OI)
+    try:
+        oi_url = (f"{THETADATA_URL}/v3/option/snapshot/open_interest"
+                  f"?symbol={ticker}&expiration=*&format=json")
+        oi_resp = requests.get(oi_url, timeout=120)
+        oi_resp.raise_for_status()
+        oi_data = oi_resp.json()
+        oi_records = oi_data.get("response", []) if isinstance(oi_data, dict) else oi_data
+
+        if oi_records:
+            oi_rows = []
+            for item in oi_records:
+                contract = item.get("contract", {})
+                data_arr = item.get("data", [])
+                if not data_arr:
+                    continue
+                oi_val = data_arr[0].get("open_interest", 0)
+                if oi_val is None:
+                    oi_val = 0
+
+                exp = str(contract.get("expiration", ""))
+                if "-" not in exp and len(exp) == 8:
+                    exp = f"{exp[:4]}-{exp[4:6]}-{exp[6:8]}"
+                exp = exp[:10]
+
+                right = str(contract.get("right", "")).upper()
+                if right in ("CALL", "C"):
+                    oi_type = "call"
+                elif right in ("PUT", "P"):
+                    oi_type = "put"
+                else:
+                    continue
+
+                try:
+                    strike = float(contract.get("strike", 0))
+                except (TypeError, ValueError):
+                    continue
+
+                oi_rows.append({
+                    "exp_date": exp,
+                    "type": oi_type,
+                    "strike": strike,
+                    "oi_fetched": int(oi_val),
+                })
+
+            if oi_rows:
+                oi_df = pd.DataFrame(oi_rows)
+                df = df.merge(oi_df, on=["exp_date", "type", "strike"], how="left")
+                df["open_interest"] = df["oi_fetched"].fillna(0).astype(int)
+                df.drop(columns=["oi_fetched"], inplace=True)
+    except Exception as ex:
+        log.warning("ThetaData OI fetch failed for %s: %s (OI will be 0)", ticker, ex)
 
     # 3. Compute IV from mid prices via Newton-Raphson
     df["mid"] = (df["bid"] + df["ask"]) / 2
@@ -661,7 +817,7 @@ def fetch_option_chain_eodhd(ticker: str) -> tuple[float, pd.DataFrame]:
                     return stock_px, pd.DataFrame(all_rows)
                 return stock_px, pd.DataFrame()
 
-    except Exception as ex:
+    except Exception:
         with _progress_lock:
             _progress["errors"] += 1
 
@@ -672,7 +828,7 @@ def fetch_option_chain_eodhd(ticker: str) -> tuple[float, pd.DataFrame]:
 # FF Computation + Ticker Scan
 # ═══════════════════════════════════════════════════════════════
 
-def scan_ticker_from_chain(ticker: str, stock_px: float, chain: pd.DataFrame, earn_by_root: dict[str, np.ndarray], today: datetime, verbose: bool = False) -> list[dict]:
+def scan_ticker_from_chain(ticker: str, stock_px: float, chain: pd.DataFrame, earn_by_root: dict[str, np.ndarray], today: datetime, verbose: bool = False, underlying_ba: float | None = None) -> list[dict]:
     """Scan one ticker for calendar spread opportunities from a pre-fetched chain.
 
     Works with both IBKR and EODHD data (same DataFrame format).
@@ -686,10 +842,32 @@ def scan_ticker_from_chain(ticker: str, stock_px: float, chain: pd.DataFrame, ea
     if stock_px <= 0 or chain.empty:
         return results
 
+    # ── Underlying spread filter (Huh & Lin 2013) — percentage-based ──
+    if underlying_ba is None:
+        underlying_ba = _get_underlying_spread(ticker)
+    if underlying_ba is not None and stock_px > 0:
+        ba_pct = underlying_ba / stock_px
+        if ba_pct > MAX_UNDERLYING_BA:
+            if verbose:
+                log.info("%s: SKIP — underlying spread %.3f%% > %.3f%%",
+                         ticker, ba_pct * 100, MAX_UNDERLYING_BA * 100)
+            return results
+
     # Compute DTE and Mid
     chain = chain.copy()
     chain["exp_dt"] = pd.to_datetime(chain["exp_date"], errors="coerce")
     chain["dte"] = (chain["exp_dt"] - pd.Timestamp(today).normalize()).dt.days
+
+    # Diagnostic: show expirations BEFORE filtering
+    if verbose:
+        exp_summary = chain.groupby("exp_date").agg(
+            rows=("bid", "size"),
+            has_data=("bid", lambda x: ((x > 0) | (chain.loc[x.index, "ask"] > 0)).sum())
+        )
+        for exp, row in exp_summary.iterrows():
+            dte_val = chain[chain["exp_date"] == exp]["dte"].iloc[0]
+            log.info("%s:   exp %s (DTE %d): %d rows, %d with bid/ask",
+                     ticker, exp, dte_val, row["rows"], row["has_data"])
 
     # Relaxed filter: at least one side must be > 0 and DTE 15-120
     chain = chain[
@@ -820,79 +998,12 @@ def scan_ticker_from_chain(ticker: str, stock_px: float, chain: pd.DataFrame, ea
         if has_earnings_between(ticker, today_int, back_exp_int, earn_by_root):
             continue
 
-        # ── Put leg: find best common strike available in BOTH expirations ──
-        put_cost = np.nan
-        combined_cost = np.nan
-        put_strike_val = np.nan
-        put_delta_val = np.nan
-
-        # 1. Get all puts for both expiries
-        f_puts = puts[puts["exp_date"] == front_exp].copy()
-        b_puts = puts[puts["exp_date"] == back_exp].copy()
-
-        if not f_puts.empty and not b_puts.empty:
-            # 2. Find common strikes
-            common_strikes = set(f_puts["strike"]).intersection(set(b_puts["strike"]))
-            
-            if common_strikes:
-                # 3. Filter front puts to common strikes and compute deltas
-                f_cands = f_puts[f_puts["strike"].isin(common_strikes)].copy()
-                
-                pf_T = f_cands["dte"].values / 365.0
-                pf_S = np.full(len(f_cands), stock_px)
-                pf_K = f_cands["strike"].values
-                
-                # Approximate IV/Delta for candidate strikes
-                f_cands["call_equiv"] = put_call_parity_call_equiv(
-                    f_cands["mid"].values, stock_px, pf_K, pf_T,
-                )
-                f_cands["iv_est"] = implied_vol_vec(f_cands["call_equiv"].values, pf_S, pf_K, pf_T)
-                f_cands["put_delta_abs"] = 1.0 - bs_delta_vec(pf_S, pf_K, pf_T, f_cands["iv_est"].values)
-                
-                f_cands = f_cands.dropna(subset=["put_delta_abs"])
-                
-                if not f_cands.empty:
-                    # 4. Select common strike closest to Target Delta
-                    f_cands["delta_diff"] = (f_cands["put_delta_abs"] - TARGET_DELTA).abs()
-                    pf_best = f_cands.loc[f_cands["delta_diff"].idxmin()]
-                    
-                    put_strike_val = float(pf_best["strike"])
-                    put_delta_val = float(pf_best["put_delta_abs"])
-                    
-                    # 5. Get back leg at the SAME common strike
-                    pb_best = b_puts[b_puts["strike"] == put_strike_val].iloc[0]
-                    
-                    # Liquidity checks
-                    pf_oi = int(pf_best.get("open_interest", 0)) if has_oi else -1
-                    pb_oi = int(pb_best.get("open_interest", 0)) if has_oi else -1
-                    
-                    pf_ok = (not has_oi) or pf_oi >= MIN_OI_LEG
-                    pb_ok = (not has_oi) or pb_oi >= MIN_OI_LEG
-                    
-                    if pf_ok and pb_ok:
-                        pf_mid = pf_best["mid"]
-                        pb_mid = (pb_best["bid"] + pb_best["ask"]) / 2
-                        put_cost = pb_mid - pf_mid
-                        if put_cost > 0:
-                            combined_cost = spread_cost + put_cost
-
         # ── Bid-ask spread cost (liquidity metric) ──
         call_ba = (front_best["ask"] - front_best["bid"]) + (back_best["ask"] - back_best["bid"])
-        call_ba_pct = call_ba / (2 * spread_cost) if spread_cost > 0 else 999.0
-
-        if not np.isnan(put_cost) and put_cost > 0 and not np.isnan(combined_cost):
-            put_ba = (pf_best["ask"] - pf_best["bid"]) + (pb_best["ask"] - pb_best["bid"])
-            dbl_ba = call_ba + put_ba
-            ba_pct = dbl_ba / (2 * combined_cost) if combined_cost > 0 else 999.0
-        else:
-            ba_pct = call_ba_pct
+        ba_pct = call_ba / (2 * spread_cost) if spread_cost > 0 else 999.0
 
         # Bid-ask filter: reject illiquid spreads (same as backtest)
         if ba_pct > BA_PCT_MAX:
-            continue
-
-        # Double Calendar Filter: Only keep if both legs exist and were priced
-        if np.isnan(put_cost) or put_cost <= 0 or np.isnan(combined_cost):
             continue
 
         combo_label = f"{front_dte}-{back_dte}"
@@ -900,7 +1011,6 @@ def scan_ticker_from_chain(ticker: str, stock_px: float, chain: pd.DataFrame, ea
             "ticker": ticker,
             "combo": combo_label,
             "strike": strike,
-            "put_strike": put_strike_val if not np.isnan(put_strike_val) else None,
             "stock_px": stock_px,
             "front_exp": front_exp_str,
             "front_dte": front_dte,
@@ -910,20 +1020,16 @@ def scan_ticker_from_chain(ticker: str, stock_px: float, chain: pd.DataFrame, ea
             "back_iv": round(back_iv * 100, 1),
             "ff": round(ff, 4),
             "call_cost": round(spread_cost, 2),
-            "put_cost": round(put_cost, 2) if not np.isnan(put_cost) else None,
-            "dbl_cost": round(combined_cost, 2) if not np.isnan(combined_cost) else None,
             "call_delta": round(call_delta_val, 3),
-            "put_delta": round(put_delta_val, 3) if not np.isnan(put_delta_val) else None,
             "front_oi": front_oi,
             "back_oi": back_oi,
             "ba_pct": round(ba_pct, 4),
         })
 
         if verbose:
-            ps_str = f", PutK={put_strike_val:.0f}" if not np.isnan(put_strike_val) else ""
-            log.info("%s: SIGNAL! FF=%.3f (%.1f%%), CallK=%.0f%s, "
+            log.info("%s: SIGNAL! FF=%.3f (%.1f%%), K=%.0f, "
                      "dc=%.2f, cost=$%.2f, %s(DTE=%d) -> %s(DTE=%d)",
-                     combo_label, ff, ff*100, strike, ps_str,
+                     combo_label, ff, ff*100, strike,
                      call_delta_val, spread_cost, front_exp_str, front_dte,
                      back_exp_str, back_dte)
 
@@ -965,13 +1071,66 @@ def _scan_one(args: tuple) -> tuple[str, list[dict]]:
 
 
 # ═══════════════════════════════════════════════════════════════
+# IBKR Scanner Universe — query IBKR directly for optionable US stocks
+# ═══════════════════════════════════════════════════════════════
+
+def get_ibkr_universe(ib: Any, max_per_scan: int = 50) -> list[str]:
+    """Build scan universe by querying IBKR's built-in market scanners.
+
+    Runs multiple scans to capture different FF candidate profiles:
+    - HIGH_OPT_IMP_VOLAT: high current IV (potential front-month richness)
+    - TOP_OPT_IMP_VOL_GAIN: IV increasing (term structure steepening)
+    - HOT_BY_OPT_VOLUME: liquid option markets (tradeable spreads)
+    - MOST_ACTIVE_USD: most active US stocks (liquid underlyings)
+
+    Returns deduplicated sorted list of tickers.
+    """
+    from ib_insync import ScannerSubscription
+
+    scan_codes = [
+        "HIGH_OPT_IMP_VOLAT",
+        "TOP_OPT_IMP_VOL_GAIN",
+        "HOT_BY_OPT_VOLUME",
+        "MOST_ACTIVE_USD",
+    ]
+
+    all_tickers = set()
+    for code in scan_codes:
+        try:
+            sub = ScannerSubscription(
+                instrument="STK",
+                locationCode="STK.US.MAJOR",
+                scanCode=code,
+                numberOfRows=max_per_scan,
+            )
+            results = ib.reqScannerData(sub)
+            for item in results:
+                sym = item.contractDetails.contract.symbol
+                if sym:
+                    all_tickers.add(sym)
+            log.info("IBKR scanner %s: %d results", code, len(results))
+        except Exception as ex:
+            log.warning("IBKR scanner %s failed: %s", code, ex)
+
+    tickers = sorted(all_tickers)
+    log.info("IBKR universe: %d unique tickers from %d scans", len(tickers), len(scan_codes))
+
+    # Fallback to DB if IBKR scanners return empty (e.g. market closed, paper account)
+    if not tickers:
+        log.warning("IBKR scanners returned 0 tickers (market closed?) — falling back to DB")
+        tickers = get_sp500_tickers()
+
+    return tickers
+
+
+# ═══════════════════════════════════════════════════════════════
 # Main Scanner — IBKR mode (sequential, live data)
 # ═══════════════════════════════════════════════════════════════
 
 def run_scanner_ibkr(ib: Any, tickers: list[str] | None = None, test_mode: bool = False) -> pd.DataFrame:
     """Scanner using IBKR live data. Sequential but accurate prices.
 
-    ~3s/ticker = ~25 min for 500 tickers (real-time data).
+    If no tickers provided, queries IBKR scanners for optionable US stocks.
     """
     today = datetime.now()
     t0 = time.time()
@@ -980,7 +1139,7 @@ def run_scanner_ibkr(ib: Any, tickers: list[str] | None = None, test_mode: bool 
     log.info("=" * 70)
 
     if tickers is None:
-        tickers = get_sp500_tickers()
+        tickers = get_ibkr_universe(ib)
     if test_mode:
         tickers = tickers[:5]
 
@@ -1009,13 +1168,14 @@ def run_scanner_ibkr(ib: Any, tickers: list[str] | None = None, test_mode: bool 
                      i+1, len(tickers), ticker, len(all_signals), elapsed, eta)
 
         try:
-            stock_px, chain = fetch_option_chain_ibkr(ib, ticker, today)
+            stock_px, chain, stk_ba = fetch_option_chain_ibkr(ib, ticker, today)
             if stock_px <= 0 or chain.empty:
                 n_no_data += 1
                 continue
 
             signals = scan_ticker_from_chain(
-                ticker, stock_px, chain, earn_by_root, today, verbose=verbose
+                ticker, stock_px, chain, earn_by_root, today, verbose=verbose,
+                underlying_ba=stk_ba
             )
             all_signals.extend(signals)
 
@@ -1040,6 +1200,172 @@ def run_scanner_ibkr(ib: Any, tickers: list[str] | None = None, test_mode: bool 
     # Top N
     top = df.head(TOP_N)
 
+    _print_results(top, df, today)
+    return df
+
+
+# ═══════════════════════════════════════════════════════════════
+# IBKR Parallel Scanner — multi-connection mass scan
+# ═══════════════════════════════════════════════════════════════
+
+def _worker_scan(worker_id: int, tickers: list[str], port: int,
+                 client_id_base: int, result_queue, earn_by_root: dict) -> None:
+    """Worker process: connect to IBKR and scan a chunk of tickers.
+
+    Each worker gets its own IBKR connection with a unique clientId.
+    Results are put into a multiprocessing Queue.
+    """
+    import asyncio
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+    from ib_insync import IB
+    cid = client_id_base + worker_id
+    ib = IB()
+
+    try:
+        ib.connect("127.0.0.1", port, clientId=cid, timeout=15)
+    except Exception as ex:
+        log.error("Worker %d: cannot connect (clientId=%d): %s", worker_id, cid, ex)
+        result_queue.put((worker_id, []))
+        return
+
+    today = datetime.now()
+    signals = []
+    n_ok = 0
+    n_err = 0
+
+    for i, ticker in enumerate(tickers):
+        if (i + 1) % 10 == 0 or i == 0:
+            log.info("W%d [%d/%d] %s (%d sigs)", worker_id, i+1, len(tickers), ticker, len(signals))
+        try:
+            stock_px, chain, stk_ba = fetch_option_chain_ibkr(ib, ticker, today)
+            if stock_px <= 0 or chain.empty:
+                continue
+            sigs = scan_ticker_from_chain(
+                ticker, stock_px, chain, earn_by_root, today,
+                underlying_ba=stk_ba,
+            )
+            signals.extend(sigs)
+            n_ok += 1
+        except (ConnectionError, OSError) as ex:
+            log.warning("W%d: connection lost at %s: %s — reconnecting", worker_id, ticker, ex)
+            try:
+                ib.disconnect()
+                time.sleep(2)
+                ib.connect("127.0.0.1", port, clientId=cid, timeout=15)
+            except Exception:
+                log.error("W%d: reconnect failed — stopping", worker_id)
+                break
+            n_err += 1
+        except Exception:
+            n_err += 1
+
+    try:
+        ib.disconnect()
+    except Exception:
+        pass
+
+    log.info("W%d done: %d/%d ok, %d sigs, %d err", worker_id, n_ok, len(tickers), len(signals), n_err)
+    result_queue.put((worker_id, signals))
+
+
+def run_scanner_ibkr_parallel(port: int = 4002, n_workers: int = 4,
+                               tickers: list[str] | None = None) -> pd.DataFrame:
+    """Scan NASDAQ/US universe in parallel using multiple IBKR connections.
+
+    Each worker gets its own IBKR connection (different clientId) and scans
+    a chunk of the universe simultaneously.  ~4x faster than sequential.
+
+    Args:
+        port: IBKR Gateway port (4002=paper, 4001=live)
+        n_workers: Number of parallel IBKR connections (default 4)
+        tickers: Override ticker list (default: DB universe + IBKR scanners)
+    """
+    from multiprocessing import Process, Queue
+    import asyncio
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+    from ib_insync import IB
+
+    today = datetime.now()
+    t0 = time.time()
+    log.info("=" * 70)
+    log.info("FORWARD FACTOR SCANNER [IBKR PARALLEL x%d] — %s", n_workers, today.strftime('%Y-%m-%d %H:%M'))
+    log.info("=" * 70)
+
+    # 1. Build universe — connect briefly to get IBKR scanner tickers, merge with DB
+    ib = IB()
+    ib.connect("127.0.0.1", port, clientId=60, timeout=10)
+
+    if tickers is None:
+        # Use IBKR scanner universe (targeted, liquid tickers)
+        # --db flag merges with full DB for exhaustive scan
+        tickers = sorted(get_ibkr_universe(ib))
+        log.info("Universe: %d tickers from IBKR scanners", len(tickers))
+
+    # 2. Load earnings (shared across all workers)
+    earn_by_root = get_earnings_dates(tickers, ib=ib)
+    ib.disconnect()
+
+    log.info("Tickers: %d", len(tickers))
+    log.info("Workers: %d parallel connections", n_workers)
+    log.info("FF threshold: %.3f", FF_THRESHOLD_DEFAULT)
+    log.info("Estimated time: ~%.0f min", len(tickers) * 5 / n_workers / 60)
+
+    # 3. Split tickers round-robin (distributes expensive tickers evenly)
+    chunks = [[] for _ in range(n_workers)]
+    for i, t in enumerate(tickers):
+        chunks[i % n_workers].append(t)
+    for w, chunk in enumerate(chunks):
+        log.info("  Worker %d: %d tickers (%s ... %s)", w, len(chunk), chunk[0], chunk[-1])
+
+    # 4. Launch workers as separate processes
+    #    clientId base = 61, so workers get 61, 62, 63, 64, ...
+    result_queue = Queue()
+    processes = []
+    for w in range(n_workers):
+        p = Process(
+            target=_worker_scan,
+            args=(w, chunks[w], port, 61, result_queue, earn_by_root),
+        )
+        p.start()
+        processes.append(p)
+        time.sleep(1)  # stagger connections to avoid IBKR throttle
+
+    # 5. Collect results
+    all_signals = []
+    for _ in range(n_workers):
+        try:
+            worker_id, signals = result_queue.get(timeout=1800)  # 30 min max
+            all_signals.extend(signals)
+            log.info("Worker %d returned %d signals", worker_id, len(signals))
+        except Exception as ex:
+            log.error("Worker result timeout: %s", ex)
+
+    for p in processes:
+        p.join(timeout=60)
+
+    elapsed = time.time() - t0
+    log.info("=" * 70)
+    log.info("PARALLEL SCAN COMPLETE: %d tickers in %.1fs (%.1fs/ticker, %.1f min)",
+             len(tickers), elapsed, elapsed / max(len(tickers), 1), elapsed / 60)
+    log.info("Found %d raw signals", len(all_signals))
+    log.info("=" * 70)
+
+    if not all_signals:
+        log.info("No signals found!")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_signals)
+    df = df.sort_values("ff", ascending=False)
+
+    top = df.head(TOP_N)
     _print_results(top, df, today)
     return df
 
@@ -1122,22 +1448,19 @@ def _print_results(top: pd.DataFrame, df: pd.DataFrame, today: datetime) -> None
     log.info("=" * 120)
     log.info("TOP %d SIGNALS (ranked by FF, 35-delta strikes)", TOP_N)
     log.info("=" * 120)
-    log.info("%-6s  %-5s  %-6s  %-6s  %-7s  %-5s  %-5s  %-6s  %-8s  %-6s  %-6s  %-10s  %-10s",
-             "Ticker", "Combo", "CallK", "PutK", "Stock", "CDlt", "PDlt",
-             "FF", "DblCost", "F.OI", "B.OI", "FrontExp", "BackExp")
+    log.info("%-6s  %-5s  %-6s  %-7s  %-5s  %-6s  %-8s  %-6s  %-6s  %-10s  %-10s",
+             "Ticker", "Combo", "Strike", "Stock", "Delta",
+             "FF", "Cost", "F.OI", "B.OI", "FrontExp", "BackExp")
 
     for _, r in top.iterrows():
-        dbl = f"${r['dbl_cost']:.2f}" if pd.notna(r.get("dbl_cost")) and r["dbl_cost"] else "N/A"
         f_oi = f"{r.get('front_oi', 0):,}" if r.get('front_oi', 0) > 0 else "N/A"
         b_oi = f"{r.get('back_oi', 0):,}" if r.get('back_oi', 0) > 0 else "N/A"
-        ps = f"${r['put_strike']:>5.0f}" if pd.notna(r.get("put_strike")) else "  N/A"
         cd = f"{r['call_delta']:.2f}" if pd.notna(r.get("call_delta")) else "N/A"
-        pd_val = f"{r['put_delta']:.2f}" if pd.notna(r.get("put_delta")) else "N/A"
         ff_display = f"{r['ff']:.2f}" if pd.notna(r.get("ff")) else "N/A"
-        log.info("%6s  %5s  $%5.0f  %6s  $%6.2f  %5s  %5s  %6s  %8s  %6s  %6s  %10s  %10s",
-                 r['ticker'], r['combo'], r['strike'], ps,
-                 r['stock_px'], cd, pd_val, ff_display,
-                 dbl, f_oi, b_oi, r['front_exp'], r['back_exp'])
+        log.info("%6s  %5s  $%5.0f  $%6.2f  %5s  %6s  $%7.2f  %6s  %6s  %10s  %10s",
+                 r['ticker'], r['combo'], r['strike'],
+                 r['stock_px'], cd, ff_display,
+                 r['call_cost'], f_oi, b_oi, r['front_exp'], r['back_exp'])
 
     # Save to file
     out_file = OUT / f"signals_{today.strftime('%Y%m%d')}.csv"
@@ -1150,11 +1473,24 @@ def _print_results(top: pd.DataFrame, df: pd.DataFrame, today: datetime) -> None
 
 
 if __name__ == "__main__":
-    from core.config import ensure_theta_terminal
-    ensure_theta_terminal()
-
     test_mode = "--test" in sys.argv
     use_ibkr = "--ibkr" in sys.argv
+    use_db = "--db" in sys.argv        # Force DB tickers instead of IBKR scanner
+    use_parallel = "--parallel" in sys.argv  # Multi-connection parallel scan
+
+    # --workers N (default 4)
+    n_workers = 4
+    if "--workers" in sys.argv:
+        idx = sys.argv.index("--workers")
+        if idx + 1 < len(sys.argv):
+            n_workers = int(sys.argv[idx + 1])
+
+    # --port N (default 4002)
+    port = 4002
+    if "--port" in sys.argv:
+        idx = sys.argv.index("--port")
+        if idx + 1 < len(sys.argv):
+            port = int(sys.argv[idx + 1])
 
     # Single ticker mode
     ticker_arg = None
@@ -1163,8 +1499,18 @@ if __name__ == "__main__":
         if idx + 1 < len(sys.argv):
             ticker_arg = [sys.argv[idx + 1]]
 
-    if use_ibkr:
-        # Connect to IBKR
+    # --tickers AAPL,GOOG,MSFT (comma-separated list)
+    if "--tickers" in sys.argv:
+        idx = sys.argv.index("--tickers")
+        if idx + 1 < len(sys.argv):
+            ticker_arg = [t.strip() for t in sys.argv[idx + 1].split(",")]
+
+    if use_parallel:
+        # Parallel multi-connection IBKR scanner (mass NASDAQ scan)
+        run_scanner_ibkr_parallel(port=port, n_workers=n_workers, tickers=ticker_arg)
+
+    elif use_ibkr:
+        # Sequential single-connection IBKR scanner
         try:
             asyncio.get_event_loop()
         except RuntimeError:
@@ -1172,20 +1518,22 @@ if __name__ == "__main__":
 
         from ib_insync import IB
         ib = IB()
-        port = 4002
-        if "--port" in sys.argv:
-            idx = sys.argv.index("--port")
-            if idx + 1 < len(sys.argv):
-                port = int(sys.argv[idx + 1])
 
         log.info("Connecting to IBKR on port %d...", port)
         ib.connect("127.0.0.1", port, clientId=60, timeout=10)
         log.info("Connected: %s", ib.isConnected())
 
+        # --db: use DB tickers; otherwise IBKR scanner discovers universe
+        tickers = ticker_arg
+        if tickers is None and use_db:
+            tickers = get_sp500_tickers()
+
         try:
-            run_scanner_ibkr(ib, tickers=ticker_arg, test_mode=test_mode)
+            run_scanner_ibkr(ib, tickers=tickers, test_mode=test_mode)
         finally:
             ib.disconnect()
             log.info("Disconnected from IBKR")
     else:
+        from core.config import ensure_theta_terminal
+        ensure_theta_terminal()
         run_scanner(tickers=ticker_arg, test_mode=test_mode)

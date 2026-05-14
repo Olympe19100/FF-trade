@@ -1,0 +1,115 @@
+{
+  "date": "2026-05-13",
+  "positions": [
+    {
+      "ticker": "KO",
+      "combo": "16-65",
+      "contracts": 9,
+      "strike": 80.0,
+      "entry_cost": 1.3,
+      "current_cost": 1.23,
+      "unrealized_pnl": -70.2,
+      "return_pct": -0.0568,
+      "front_dte": 15,
+      "stock_px": 80.03
+    },
+    {
+      "ticker": "ALAB",
+      "combo": "16-65",
+      "contracts": 1,
+      "strike": 220.0,
+      "entry_cost": 16.25,
+      "current_cost": 15.17,
+      "unrealized_pnl": -108.8,
+      "return_pct": -0.0667,
+      "front_dte": 15,
+      "stock_px": 204.42
+    },
+    {
+      "ticker": "TSLA",
+      "combo": "16-44",
+      "contracts": 1,
+      "strike": 465.0,
+      "entry_cost": 11.85,
+      "current_cost": 11.3,
+      "unrealized_pnl": -56.3,
+      "return_pct": -0.0472,
+      "front_dte": 15,
+      "stock_px": 433.45
+    },
+    {
+      "ticker": "GOOG",
+      "combo": "16-65",
+      "contracts": 5,
+      "strike": 400.0,
+      "entry_cost": 12.25,
+      "current_cost": 11.73,
+      "unrealized_pnl": -269.0,
+      "return_pct": -0.0437,
+      "front_dte": 15,
+      "stock_px": 383.82
+    },
+    {
+      "ticker": "GOOGL",
+      "combo": "16-65",
+      "contracts": 4,
+      "strike": 405.0,
+      "entry_cost": 12.8,
+      "current_cost": 12.25,
+      "unrealized_pnl": -225.2,
+      "return_pct": -0.0437,
+      "front_dte": 15,
+      "stock_px": 387.35
+    },
+    {
+      "ticker": "BA",
+      "combo": "16-65",
+      "contracts": 5,
+      "strike": 250.0,
+      "entry_cost": 6.8,
+      "current_cost": 6.68,
+      "unrealized_pnl": -69.0,
+      "return_pct": -0.0201,
+      "front_dte": 15,
+      "stock_px": 236.87
+    },
+    {
+      "ticker": "MCD",
+      "combo": "16-65",
+      "contracts": 3,
+      "strike": 280.0,
+      "entry_cost": 4.45,
+      "current_cost": 4.21,
+      "unrealized_pnl": -74.4,
+      "return_pct": -0.0548,
+      "front_dte": 15,
+      "stock_px": 274.84
+    },
+    {
+      "ticker": "ARM",
+      "combo": "16-65",
+      "contracts": 6,
+      "strike": 220.0,
+      "entry_cost": 13.42,
+      "current_cost": 12.7,
+      "unrealized_pnl": -439.8,
+      "return_pct": -0.0543,
+      "front_dte": 15,
+      "stock_px": 207.92
+    },
+    {
+      "ticker": "FCX",
+      "combo": "16-65",
+      "contracts": 5,
+      "strike": 70.0,
+      "entry_cost": 3.06,
+      "current_cost": 2.88,
+      "unrealized_pnl": -99.0,
+      "return_pct": -0.0632,
+      "front_dte": 15,
+      "stock_px": 66.03
+    }
+  ],
+  "errors": [],
+  "total_unrealized_pnl": -1411.7
+}

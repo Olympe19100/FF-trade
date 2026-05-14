@@ -1,0 +1,162 @@
+{
+  "AAPL": {
+    "combo_attempts": 523,
+    "combo_fills": 424,
+    "legs_attempts": 145,
+    "legs_fills": 96,
+    "avg_combo_seconds": 0.0,
+    "avg_legs_seconds": 0.0
+  },
+  "ARM": {
+    "combo_attempts": 6,
+    "combo_fills": 2,
+    "legs_attempts": 2,
+    "legs_fills": 0,
+    "avg_combo_seconds": 72.52,
+    "avg_legs_seconds": 0.0
+  },
+  "KO": {
+    "combo_attempts": 5,
+    "combo_fills": 1,
+    "legs_attempts": 3,
+    "legs_fills": 1,
+    "avg_combo_seconds": 77.5,
+    "avg_legs_seconds": 415.25
+  },
+  "PG": {
+    "combo_attempts": 2,
+    "combo_fills": 0,
+    "legs_attempts": 1,
+    "legs_fills": 1,
+    "avg_combo_seconds": 0.0,
+    "avg_legs_seconds": 314.77
+  },
+  "ANET": {
+    "combo_attempts": 3,
+    "combo_fills": 0,
+    "legs_attempts": 1,
+    "legs_fills": 0,
+    "avg_combo_seconds": 0.0,
+    "avg_legs_seconds": 0.0
+  },
+  "MRNA": {
+    "combo_attempts": 2,
+    "combo_fills": 1,
+    "legs_attempts": 1,
+    "legs_fills": 1,
+    "avg_combo_seconds": 63.58,
+    "avg_legs_seconds": 337.9
+  },
+  "OXY": {
+    "combo_attempts": 1,
+    "combo_fills": 0,
+    "legs_attempts": 1,
+    "legs_fills": 0,
+    "avg_combo_seconds": 0.0,
+    "avg_legs_seconds": 0.0
+  },
+  "ALAB": {
+    "combo_attempts": 2,
+    "combo_fills": 1,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 65.39,
+    "avg_legs_seconds": 0.0
+  },
+  "QCOM": {
+    "combo_attempts": 5,
+    "combo_fills": 0,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 0.0,
+    "avg_legs_seconds": 0.0
+  },
+  "MCD": {
+    "combo_attempts": 4,
+    "combo_fills": 1,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 81.52,
+    "avg_legs_seconds": 0.0
+  },
+  "TSLA": {
+    "combo_attempts": 1,
+    "combo_fills": 1,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 88.5,
+    "avg_legs_seconds": 0.0
+  },
+  "GOOG": {
+    "combo_attempts": 1,
+    "combo_fills": 1,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 68.41,
+    "avg_legs_seconds": 0.0
+  },
+  "GOOGL": {
+    "combo_attempts": 1,
+    "combo_fills": 1,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 65.35,
+    "avg_legs_seconds": 0.0
+  },
+  "BA": {
+    "combo_attempts": 3,
+    "combo_fills": 1,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 64.38,
+    "avg_legs_seconds": 0.0
+  },
+  "FCX": {
+    "combo_attempts": 4,
+    "combo_fills": 1,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 119.91,
+    "avg_legs_seconds": 0.0
+  },
+  "DIS": {
+    "combo_attempts": 1,
+    "combo_fills": 0,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 0.0,
+    "avg_legs_seconds": 0.0
+  },
+  "SMCI": {
+    "combo_attempts": 3,
+    "combo_fills": 2,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 106.2,
+    "avg_legs_seconds": 0.0
+  },
+  "NOW": {
+    "combo_attempts": 2,
+    "combo_fills": 1,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 74.47,
+    "avg_legs_seconds": 0.0
+  },
+  "BX": {
+    "combo_attempts": 1,
+    "combo_fills": 0,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 0.0,
+    "avg_legs_seconds": 0.0
+  },
+  "COIN": {
+    "combo_attempts": 3,
+    "combo_fills": 2,
+    "legs_attempts": 0,
+    "legs_fills": 0,
+    "avg_combo_seconds": 215.95,
+    "avg_legs_seconds": 0.0
+  }
+}

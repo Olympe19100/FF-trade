@@ -11,11 +11,13 @@ import pandas as pd
 from datetime import datetime
 
 from core.config import (
-    STATE, OUTPUT, PORTFOLIO_FILE, TRADES_FILE, BACKTEST_TRADES_FILE,
-    MAX_POSITIONS, MAX_CONTRACTS, DEFAULT_ALLOC,
+    STATE, OUTPUT, CACHE, PORTFOLIO_FILE, TRADES_FILE, BACKTEST_TRADES_FILE,
+    PENDING_SIGNALS_FILE, MAX_PENDING_AGE_DAYS, MIN_FRONT_DTE_PENDING,
+    DEFAULT_ALLOC,
     KELLY_FRAC, MIN_KELLY_TRADES, CONTRACT_MULT,
-    COMMISSION_LEG, SLIPPAGE_PER_LEG, SLIPPAGE_BUFFER,
-    FF_THRESHOLD_DEFAULT,
+    COMMISSION_LEG, SLIPPAGE_PER_LEG,
+    MAX_PCT_OF_OI, OI_FULL_SIZE,
+    USE_ALMGREN_SIZING,
     get_logger,
 )
 
@@ -92,9 +94,53 @@ def compute_kelly(returns: list[float]) -> float:
     return DEFAULT_ALLOC
 
 
-def cost_per_contract(cost_per_share: float, n_legs: int = 4) -> float:
-    """Cost per contract including slippage + commission (matches backtest.py)."""
-    slippage = SLIPPAGE_PER_LEG * n_legs  # $0.12/share for 4-leg double calendar
+def _get_daily_volume(ticker: str) -> int:
+    """Read daily option volume from cache/daily_volumes.pkl.
+
+    Returns 0 if data unavailable.
+    """
+    vol_file = CACHE / "daily_volumes.pkl"
+    if not vol_file.exists():
+        return 0
+    try:
+        import pickle
+        with open(vol_file, "rb") as f:
+            volumes = pickle.load(f)
+        return int(volumes.get(ticker, 0))
+    except Exception:
+        return 0
+
+
+def estimate_slippage(mid: float, contracts: int, daily_volume: int,
+                      underlying_vol: float) -> float:
+    """Dynamic slippage model (Almgren et al. 2005).
+
+    Formula: mid × (contracts/volume)^0.6 × underlying_vol
+    Clamped to [0.005, 10% of mid].
+
+    Falls back to SLIPPAGE_PER_LEG if inputs are missing/invalid.
+    """
+    if mid <= 0 or contracts <= 0 or daily_volume <= 0 or underlying_vol <= 0:
+        return SLIPPAGE_PER_LEG
+
+    participation = contracts / daily_volume
+    slip = mid * (participation ** 0.6) * underlying_vol
+    # Clamp
+    slip = max(0.005, min(slip, mid * 0.10))
+    return round(slip, 4)
+
+
+def cost_per_contract(cost_per_share: float, n_legs: int = 2,
+                      slippage_override: float | None = None) -> float:
+    """Cost per contract including slippage + commission (matches backtest.py).
+
+    Args:
+        slippage_override: if provided, use this instead of SLIPPAGE_PER_LEG * n_legs.
+    """
+    if slippage_override is not None:
+        slippage = slippage_override
+    else:
+        slippage = SLIPPAGE_PER_LEG * n_legs
     return (cost_per_share + slippage) * CONTRACT_MULT + COMMISSION_LEG * n_legs
 
 
@@ -103,14 +149,15 @@ def size_portfolio(
     kelly_f: float,
     account_value: float,
 ) -> list[tuple[str, int, float]]:
-    """Two-pass sizing: guarantee all positions get 1 contract, then add Kelly extras.
+    """Liquidity-weighted sizing: budget proportional to OI, hard-capped at 10% OI.
 
-    Pass 1: Reserve 1 contract per position (minimum deployment).
-    Pass 2: Distribute remaining Kelly budget as extra contracts
-            (cheapest positions get extras first).
+    Names with OI >= OI_FULL_SIZE (1000) get full Kelly weight.
+    Names with lower OI get proportionally less budget.
+    Hard cap: never exceed 10% of the least-liquid leg's OI.
 
     Args:
-        signals_info: list of (ticker, cost_per_share, n_legs) for each position
+        signals_info: list of (ticker, cost_per_share, n_legs[, ff, ba_pct[, min_leg_oi]])
+                      ff, ba_pct, min_leg_oi are optional (backward compatible).
         kelly_f: Kelly fraction (e.g. 0.041)
         account_value: total account value
 
@@ -123,31 +170,75 @@ def size_portfolio(
 
     kelly_target = kelly_f * account_value
 
-    # Pass 1: 1 contract per position (guaranteed entry)
+    # Parse optional fields from variable-length tuples
+    # Support 3-tuple (ticker, cps, n_legs), 5-tuple (..., ff, ba_pct), 6-tuple (..., min_leg_oi)
+    parsed: list[tuple[str, float, int, float, float, int]] = []
+    for item in signals_info:
+        ticker, cps, n_legs = item[0], item[1], item[2]
+        ff = float(item[3]) if len(item) > 3 else 1.0
+        ba_pct = float(item[4]) if len(item) > 4 else 0.0
+        min_leg_oi = int(item[5]) if len(item) > 5 else 0
+        parsed.append((ticker, cps, n_legs, ff, ba_pct, min_leg_oi))
+
+    # ── Liquidity-weighted allocation ──
+    # Weight = ff * liquidity_factor * (1 - ba_pct)
+    # liquidity_factor: scales linearly from 0 to 1 based on OI vs OI_FULL_SIZE
+    #   OI >= 1000 → 1.0 (full weight)
+    #   OI = 500   → 0.5
+    #   OI = 100   → 0.1
+    #   OI = 0     → 1.0 (unknown OI = no penalty, rely on hard cap)
+    weights: list[float] = []
+    for ticker, cps, n_legs, ff, ba_pct, min_leg_oi in parsed:
+        if min_leg_oi > 0:
+            liq_factor = min(1.0, min_leg_oi / OI_FULL_SIZE)
+        else:
+            liq_factor = 1.0  # OI unknown — no discount, hard cap will handle
+
+        ba_discount = max(0.3, 1.0 - ba_pct)  # wide BA → less allocation
+        w = max(ff, 0.01) * liq_factor * ba_discount
+        weights.append(w)
+
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        total_weight = 1.0
+
+    # Size each position: budget proportional to weight, min 1 contract
     sizing: list[tuple[str, int, float]] = []
-    for ticker, cps, n_legs in signals_info:
-        cpc = cost_per_contract(cps, n_legs)
+    for i, (ticker, cps, n_legs, ff, ba_pct, min_leg_oi) in enumerate(parsed):
+        # ── Almgren slippage integration ──
+        slippage_override = None
+        if USE_ALMGREN_SIZING:
+            daily_vol = _get_daily_volume(ticker)
+            if daily_vol > 0 and cps > 0:
+                # Rough initial estimate: use Kelly target / cpc as contract count
+                est_n = max(1, int((weights[i] / total_weight) * kelly_target
+                                   / max(cost_per_contract(cps, n_legs), 1)))
+                almgren_slip = estimate_slippage(
+                    mid=cps, contracts=est_n, daily_volume=daily_vol,
+                    underlying_vol=0.30  # default
+                )
+                static_slip = SLIPPAGE_PER_LEG * n_legs
+                log.info("  Almgren slip=$%.4f vs static=$%.4f for %s",
+                         almgren_slip, static_slip, ticker)
+                slippage_override = almgren_slip
+
+        cpc = cost_per_contract(cps, n_legs, slippage_override=slippage_override)
         if cpc <= 0:
             sizing.append((ticker, 0, cpc))
             continue
-        sizing.append((ticker, 1, cpc))
 
-    # Pass 2: distribute remaining budget as extra contracts
-    min_deployed = sum(n * cpc for _, n, cpc in sizing)
-    extra_budget = max(0, kelly_target - min_deployed)
+        budget_i = (weights[i] / total_weight) * kelly_target
+        n = max(1, int(budget_i / cpc))
 
-    if extra_budget > 0:
-        order = sorted(range(len(sizing)), key=lambda i: sizing[i][2])
-        for idx in order:
-            ticker, n, cpc = sizing[idx]
-            if cpc <= 0 or n >= MAX_CONTRACTS:
-                continue
-            add = min(int(extra_budget / cpc), MAX_CONTRACTS - n)
-            if add > 0:
-                sizing[idx] = (ticker, n + add, cpc)
-                extra_budget -= add * cpc
-            if extra_budget <= 0:
-                break
+        # Hard cap by OI: max 5% of the least-liquid leg (skip if OI=0)
+        if min_leg_oi > 0:
+            oi_cap = max(1, int(min_leg_oi * MAX_PCT_OF_OI))
+            if n > oi_cap:
+                log.info("  %s: OI cap %d -> %d (min_leg_oi=%d, liq_w=%.2f)",
+                         ticker, n, oi_cap, min_leg_oi, weights[i])
+                n = oi_cap
+
+        sizing.append((ticker, n, cpc))
 
     result: list[tuple[str, int, float]] = []
     for ticker, n, cpc in sizing:
@@ -187,9 +278,10 @@ def add_position(
     ff: float,
     n_legs: int,
     put_strike: float | None = None,
+    min_leg_oi: int = 0,
 ) -> dict:
     """Add a new position to portfolio state."""
-    slippage = SLIPPAGE_PER_LEG * n_legs  # Entry slippage: $0.12/share for 4-leg
+    slippage = SLIPPAGE_PER_LEG * n_legs  # Entry slippage per share
     commission = n_legs * COMMISSION_LEG * contracts
     total_cost = (cost_per_share + slippage) * CONTRACT_MULT * contracts + commission
 
@@ -198,7 +290,7 @@ def add_position(
         "ticker": ticker,
         "combo": combo,
         "strike": float(strike),
-        "put_strike": float(put_strike) if put_strike is not None else float(strike),
+        "put_strike": float(put_strike) if put_strike is not None else None,
         "spread_type": spread_type,
         "front_exp": str(front_exp),
         "back_exp": str(back_exp),
@@ -208,6 +300,7 @@ def add_position(
         "total_deployed": round(total_cost, 2),
         "n_legs": n_legs,
         "ff": float(ff),
+        "min_leg_oi": min_leg_oi,
     }
     portfolio["positions"].append(pos)
     return pos
@@ -226,7 +319,7 @@ def record_trade(
     else:
         data = {"trades": []}
 
-    data["trades"].append({
+    trade_record = {
         "id": position["id"],
         "ticker": position["ticker"],
         "combo": position["combo"],
@@ -238,10 +331,113 @@ def record_trade(
         "pnl": round(pnl, 2),
         "return_pct": round(return_pct, 4),
         "ff": position["ff"],
-    })
+        "entry_method": position.get("execution_method", ""),
+        "entry_slippage": position.get("slippage", 0.0),
+        "close_method": position.get("close_method", ""),
+        "close_slippage": round(exit_price - position.get("cost_per_share", 0), 4)
+                         if exit_price else 0.0,
+    }
+    data["trades"].append(trade_record)
 
     with open(TRADES_FILE, "w") as f:
         json.dump(data, f, indent=2)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  PENDING SIGNALS — Save/Load/Merge for retry
+# ═══════════════════════════════════════════════════════════════
+
+def load_pending_signals() -> list[dict]:
+    """Load pending signals from state/pending_signals.json."""
+    if not PENDING_SIGNALS_FILE.exists():
+        return []
+    try:
+        with open(PENDING_SIGNALS_FILE) as f:
+            data = json.load(f)
+        return data.get("signals", [])
+    except Exception:
+        return []
+
+
+def save_pending_signals(signals: list[dict]) -> None:
+    """Save pending signals to state/pending_signals.json."""
+    data = {
+        "last_updated": datetime.now().isoformat(),
+        "signals": signals,
+    }
+    with open(PENDING_SIGNALS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+    log.info("  Saved %d pending signal(s) to %s", len(signals),
+             PENDING_SIGNALS_FILE.name)
+
+
+def merge_signals_with_pending(fresh: pd.DataFrame,
+                                pending: list[dict]) -> pd.DataFrame:
+    """Merge fresh scanner signals with pending (unfilled) signals.
+
+    - Dedup: if ticker present in both fresh AND pending, keep fresh
+    - Age check: drop pending if > MAX_PENDING_AGE_DAYS old
+    - DTE check: drop pending if front DTE < MIN_FRONT_DTE_PENDING
+    - Return combined DataFrame sorted by FF descending
+    """
+    if not pending:
+        return fresh
+
+    today = datetime.now()
+    fresh_tickers = set(fresh["ticker"].tolist()) if not fresh.empty else set()
+
+    kept = []
+    for sig in pending:
+        ticker = sig.get("ticker", "")
+        # Dedup: fresh takes priority
+        if ticker in fresh_tickers:
+            log.info("  Pending %s: replaced by fresh signal", ticker)
+            continue
+        # Age check
+        pending_since = sig.get("pending_since", "")
+        if pending_since:
+            try:
+                age = (today - datetime.strptime(pending_since, "%Y-%m-%d")).days
+            except ValueError:
+                age = 999
+            if age > MAX_PENDING_AGE_DAYS:
+                log.info("  Pending %s: dropped (age %dd > %dd)",
+                         ticker, age, MAX_PENDING_AGE_DAYS)
+                continue
+        # DTE check
+        front_exp = sig.get("front_exp", "")
+        if front_exp:
+            try:
+                front_dt = datetime.strptime(str(front_exp), "%Y-%m-%d")
+                front_dte = (front_dt - today).days
+            except ValueError:
+                front_dte = 999
+            if front_dte < MIN_FRONT_DTE_PENDING:
+                log.info("  Pending %s: dropped (front DTE %d < %d)",
+                         ticker, front_dte, MIN_FRONT_DTE_PENDING)
+                continue
+        kept.append(sig)
+
+    if not kept:
+        return fresh
+
+    # Convert pending to DataFrame rows matching fresh columns
+    pending_df = pd.DataFrame(kept)
+    # Mark source for downstream identification
+    pending_df["_pending"] = True
+    if not fresh.empty:
+        fresh = fresh.copy()
+        fresh["_pending"] = False
+        combined = pd.concat([fresh, pending_df], ignore_index=True)
+    else:
+        combined = pending_df
+        combined["_pending"] = True
+
+    combined = combined.sort_values("ff", ascending=False).reset_index(drop=True)
+    n_pending = len(kept)
+    log.info("  Merged %d fresh + %d pending = %d total signals",
+             len(fresh), n_pending, len(combined))
+    return combined
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -289,7 +485,7 @@ def ibkr_portfolio_to_positions(
     for pos in portfolio_positions:
         ticker = pos["ticker"]
         strike = float(pos["strike"])
-        put_strike = float(pos.get("put_strike", strike))
+        put_strike = float(pos.get("put_strike") or strike)
         right = pos.get("right", "C") # Fallback for single legs
         f_exp = pos["front_exp"].replace("-", "")
         b_exp = pos["back_exp"].replace("-", "")

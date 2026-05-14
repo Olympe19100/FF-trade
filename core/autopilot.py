@@ -32,7 +32,7 @@ from collections import deque
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 
 # Force unbuffered output
@@ -51,12 +51,14 @@ sys.path.insert(0, str(ROOT))
 from core.config import (
     STATE, OUTPUT, CONFIG_FILE, PORTFOLIO_FILE, TRADES_FILE, LOG_FILE,
     CLOSE_DAYS, COMMISSION_LEG, CONTRACT_MULT, SLIPPAGE_BUFFER,
+    PENDING_SIGNALS_FILE,
+    RETRY_TIME_ET, ENABLE_INTRADAY_RETRY,
     load_json,
 )
 from core.portfolio import (
     load_portfolio, save_portfolio, load_latest_signals,
     compute_kelly, load_trade_history, size_portfolio,
-    add_position, record_trade, cost_per_contract,
+    add_position, record_trade,
 )
 
 
@@ -155,15 +157,41 @@ def send_alert(subject, body, config):
 #  SCAN
 # ═══════════════════════════════════════════════════════════════
 
-def run_scan():
-    """Run ThetaData scanner, return signals DataFrame."""
+def run_scan(mode="theta", port=4002, n_workers=4):
+    """Run FF scanner and return signals DataFrame.
+
+    Args:
+        mode: "theta" (ThetaData), "ibkr" (IBKR sequential), "parallel" (IBKR multi-connection)
+        port: IBKR Gateway port (4002=paper, 4001=live)
+        n_workers: Number of parallel IBKR connections (for mode="parallel")
+    """
     log.info("=" * 60)
-    log.info("AUTOPILOT - SCAN")
+    log.info(f"AUTOPILOT - SCAN [{mode.upper()}]")
     log.info("=" * 60)
 
     try:
-        from core.scanner import run_scanner
-        signals = run_scanner()
+        if mode == "parallel":
+            from core.scanner import run_scanner_ibkr_parallel
+            signals = run_scanner_ibkr_parallel(port=port, n_workers=n_workers)
+
+        elif mode == "ibkr":
+            import asyncio
+            try:
+                asyncio.get_event_loop()
+            except RuntimeError:
+                asyncio.set_event_loop(asyncio.new_event_loop())
+            from ib_insync import IB
+            from core.scanner import run_scanner_ibkr
+            ib = IB()
+            ib.connect("127.0.0.1", port, clientId=60, timeout=10)
+            try:
+                signals = run_scanner_ibkr(ib)
+            finally:
+                ib.disconnect()
+
+        else:
+            from core.scanner import run_scanner
+            signals = run_scanner()
 
         if signals is None or signals.empty:
             log.info("SCAN: No signals found")
@@ -176,7 +204,7 @@ def run_scan():
 
         for _, r in top5.iterrows():
             log.debug(f"  {r['ticker']} {r['combo']} FF={r['ff']:.3f} "
-                       f"dbl=${r.get('dbl_cost', 'N/A')}")
+                       f"cost=${r.get('call_cost', 'N/A')}")
 
         return signals
     except Exception as ex:
@@ -221,10 +249,6 @@ def run_trade(dry_run=False, config=None):
 
         # Step 1: Close expiring positions (J-1)
         log.info("TRADE Step 1: Closing expiring positions")
-        portfolio_before = load_portfolio()
-        active_before = [p for p in portfolio_before["positions"]
-                         if "exit_date" not in p]
-
         close_expiring_positions(ib, acct)
 
         portfolio_after = load_portfolio()
@@ -385,12 +409,11 @@ def run_paper_trade(config=None):
                     break
                 if sig["ticker"] in active_tickers:
                     continue
-                has_dbl = pd.notna(sig.get("dbl_cost")) and sig["dbl_cost"] > 0
-                cps = sig["dbl_cost"] if has_dbl else sig["call_cost"]
+                cps = sig["call_cost"]
                 if cps <= 0:
                     continue
-                n_legs = 4 if has_dbl else 2
-                candidates.append((sig, cps, n_legs, has_dbl))
+                n_legs = 2
+                candidates.append((sig, cps, n_legs))
 
             if not candidates:
                 log.info("  No valid candidates after filtering")
@@ -401,7 +424,7 @@ def run_paper_trade(config=None):
                 sizing = size_portfolio(signals_info, kelly_f,
                                         paper_account + realized_pnl)
 
-                for (sig, cps, n_legs, has_dbl), (ticker, contracts, deployed) in \
+                for (sig, cps, n_legs), (ticker, contracts, deployed) in \
                         zip(candidates, sizing):
                     if contracts <= 0:
                         continue
@@ -410,18 +433,13 @@ def run_paper_trade(config=None):
                                     f"available ${account_value:,.0f})")
                         continue
 
-                    spread_type = "double" if has_dbl else "single"
                     entry_cost = cps + SLIPPAGE_BUFFER
-
-                    put_strike = sig.get("put_strike")
-                    if pd.isna(put_strike):
-                        put_strike = None
 
                     pos = add_position(
                         portfolio, ticker, sig["combo"],
                         sig["strike"], sig["front_exp"], sig["back_exp"],
-                        contracts, entry_cost, spread_type,
-                        sig["ff"], n_legs, put_strike=put_strike
+                        contracts, entry_cost, "single",
+                        sig["ff"], n_legs,
                     )
                     pos["paper"] = True
                     result["entered"].append(pos)
@@ -430,7 +448,7 @@ def run_paper_trade(config=None):
 
                     log.info(f"  ENTERED {ticker} {sig['combo']} "
                              f"FF={sig['ff']:.3f} {contracts}x "
-                             f"@ ${entry_cost:.2f}/sh ({spread_type})")
+                             f"@ ${entry_cost:.2f}/sh (single)")
 
     save_portfolio(portfolio)
     log.info(f"PAPER complete: {len(result['closed'])} closed, "
@@ -466,8 +484,7 @@ def _dry_run_trade(result):
                 if n >= slots:
                     break
                 if sig["ticker"] not in active_tickers:
-                    has_dbl = pd.notna(sig.get("dbl_cost")) and sig["dbl_cost"] > 0
-                    cost = sig["dbl_cost"] if has_dbl else sig["call_cost"]
+                    cost = sig["call_cost"]
                     log.info(f"DRY RUN: Would enter {sig['ticker']} {sig['combo']} "
                              f"FF={sig['ff']:.3f} ${cost:.2f}")
                     result["entered"].append({
@@ -487,7 +504,8 @@ def _dry_run_trade(result):
 def _price_position(pos):
     """Price a single position using ThetaData.
 
-    Matches the 4 legs (call/put x front/back) and computes current spread cost.
+    Matches the call legs (front/back) and computes current spread cost.
+    Legacy double positions also match put legs for backwards compat.
     Returns dict with pricing info, or None if pricing fails.
     """
     import pandas as pd
@@ -498,7 +516,7 @@ def _price_position(pos):
     put_strike = pos.get("put_strike", strike)
     front_exp = pos["front_exp"]
     back_exp = pos["back_exp"]
-    is_double = pos.get("spread_type", "double") == "double"
+    is_double = pos.get("spread_type", "single") == "double"
 
     stock_px, chain = 0, pd.DataFrame()
     try:
@@ -563,7 +581,7 @@ def _price_position(pos):
 
     entry_cost = pos["cost_per_share"]
     contracts = pos["contracts"]
-    n_legs = pos.get("n_legs", 4)
+    n_legs = pos.get("n_legs", 2)
     commission = n_legs * COMMISSION_LEG * contracts
 
     unrealized_pnl = (current_cost - entry_cost) * 100 * contracts - commission
@@ -583,7 +601,6 @@ def _price_position(pos):
         "combo": pos.get("combo", ""),
         "contracts": contracts,
         "strike": strike,
-        "put_strike": put_strike,
         "entry_cost": round(entry_cost, 2),
         "current_cost": round(current_cost, 2),
         "unrealized_pnl": round(unrealized_pnl, 2),
@@ -730,7 +747,7 @@ def run_report(trade_result=None, config=None, monitor_data=None):
 
         sent = send_email(subject, body, config)
         if sent:
-            log.info(f"Report sent via email")
+            log.info("Report sent via email")
         return body
     except Exception as ex:
         log.error(f"REPORT FAILED: {ex}", exc_info=True)
@@ -746,14 +763,13 @@ def build_report(trade_result=None, monitor_data=None):
     today_str = today.strftime("%Y-%m-%d")
     lines = []
 
-    lines.append(f"FF Double Calendar Strategy - Daily Report")
+    lines.append("FF Double Calendar Strategy - Daily Report")
     lines.append(f"Date: {today_str}")
     lines.append("")
 
     # ── Portfolio Status ──
     portfolio = load_json(PORTFOLIO_FILE, {"positions": []})
     active = [p for p in portfolio["positions"] if "exit_date" not in p]
-    closed = [p for p in portfolio["positions"] if "exit_date" in p]
     total_deployed = sum(p.get("total_deployed", 0) for p in active)
 
     lines.append("=== PORTFOLIO STATUS ===")
@@ -800,10 +816,9 @@ def build_report(trade_result=None, monitor_data=None):
                 cts = p.get("contracts", "?")
                 cps = p.get("cost_per_share", 0)
                 ks = f"K={p.get('strike', '?'):.0f}" if isinstance(p.get("strike"), (int, float)) else ""
-                ps = f"/{p.get('put_strike', '?'):.0f}" if isinstance(p.get("put_strike"), (int, float)) else ""
                 lines.append(
                     f"  {p['ticker']} {p.get('combo', '')} | "
-                    f"FF={ff:.1f}% | {cts} cts @ ${cps:.2f}/sh | {ks}{ps}"
+                    f"FF={ff:.1f}% | {cts} cts @ ${cps:.2f}/sh | {ks}"
                 )
         else:
             lines.append("ENTERED: (none)")
@@ -824,13 +839,12 @@ def build_report(trade_result=None, monitor_data=None):
     lines.append("=== OPEN POSITIONS ===")
     if active:
         for p in sorted(active, key=lambda x: -x.get("ff", 0)):
-            ps = p.get("put_strike", p.get("strike", 0))
             lines.append(
                 f"  {p['ticker']} {p.get('combo', '')} | "
                 f"{p.get('contracts', 0)} cts | "
                 f"Entry ${p.get('cost_per_share', 0):.2f} | "
                 f"FF={p.get('ff', 0):.1f}% | "
-                f"K={p.get('strike', 0):.0f}/{ps:.0f} | "
+                f"K={p.get('strike', 0):.0f} | "
                 f"Exp {p.get('front_exp', '?')} -> {p.get('back_exp', '?')}"
             )
     else:
@@ -871,10 +885,10 @@ def build_report(trade_result=None, monitor_data=None):
     if latest_signals is not None and not latest_signals.empty:
         lines.append(f"=== LATEST SIGNALS ({len(latest_signals)} total) ===")
         for _, r in latest_signals.head(10).iterrows():
-            dbl = f"${r['dbl_cost']:.2f}" if pd.notna(r.get("dbl_cost")) else "N/A"
+            cost = f"${r['call_cost']:.2f}" if pd.notna(r.get("call_cost")) else "N/A"
             lines.append(
                 f"  {r['ticker']} {r['combo']} | FF={r['ff']:.3f} | "
-                f"CallK={r['strike']:.0f} | Dbl={dbl}"
+                f"K={r['strike']:.0f} | Cost={cost}"
             )
         lines.append("")
 
@@ -940,7 +954,6 @@ def run_trade_web(ib, acct, config=None):
     try:
         # Step 1: Close expiring positions
         log.info("TRADE_WEB Step 1: Closing expiring positions")
-        portfolio_before = load_portfolio()
         close_expiring_positions(ib, acct)
 
         portfolio_after = load_portfolio()
@@ -1021,7 +1034,8 @@ class DaemonScheduler:
         self._setup_scheduler()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="autopilot-daemon")
         self._thread.start()
-        self._log("DAEMON", "Daemon started — schedule: 09:00 Scan | 10:15 Trade | 16:30 Monitor")
+        retry_str = f" | {RETRY_TIME_ET} Retry" if ENABLE_INTRADAY_RETRY else ""
+        self._log("DAEMON", f"Daemon started — schedule: 09:00 Scan | 10:15 Trade{retry_str} | 16:30 Monitor")
 
     def stop(self):
         """Stop the daemon."""
@@ -1037,6 +1051,8 @@ class DaemonScheduler:
         self._scheduler = schedule.Scheduler()
         self._scheduler.every().day.at("09:00", "America/New_York").do(self._job_scan)
         self._scheduler.every().day.at("10:15", "America/New_York").do(self._job_trade)
+        if ENABLE_INTRADAY_RETRY:
+            self._scheduler.every().day.at(RETRY_TIME_ET, "America/New_York").do(self._job_retry)
         self._scheduler.every().day.at("16:30", "America/New_York").do(self._job_monitor)
 
     def _loop(self):
@@ -1111,6 +1127,42 @@ class DaemonScheduler:
         except Exception as ex:
             self._log("TRADE", f"Trade failed: {ex}", level="error")
             send_alert("Daemon Trade Failed", str(ex), self._config)
+
+    def _job_retry(self):
+        """Intra-day retry: re-attempt today's pending signals in the afternoon."""
+        if not _is_weekday():
+            return
+        ib_st = self._ib_state
+        if not ib_st or not ib_st.get("connected") or not ib_st.get("ib"):
+            self._log("RETRY", "No IBKR connection — skipping intra-day retry", level="warning")
+            return
+
+        self._log("RETRY", "Starting intra-day retry...")
+        try:
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            pending = load_json(PENDING_SIGNALS_FILE, [])
+            today_pending = [s for s in pending if s.get("pending_since") == today_str]
+
+            if not today_pending:
+                self._log("RETRY", "No pending signals from today — nothing to retry")
+                return
+
+            self._log("RETRY", f"Found {len(today_pending)} pending signals from today")
+
+            from core.trader import enter_new_positions
+            from api.ibkr_worker import run_in_ib_thread
+
+            result = run_in_ib_thread(
+                enter_new_positions, ib_st["ib"], ib_st["account"],
+                retry_signals=today_pending
+            )
+            if result:
+                entered = result.get("entered", 0)
+                self._log("RETRY", f"Intra-day retry completed: {entered} filled")
+            else:
+                self._log("RETRY", "Intra-day retry completed: no fills")
+        except Exception as ex:
+            self._log("RETRY", f"Intra-day retry failed: {ex}", level="error")
 
     def _job_monitor(self):
         if not _is_weekday():
@@ -1234,7 +1286,15 @@ def main():
         description="FF Double Calendar - Autopilot Orchestrator"
     )
     parser.add_argument("--scan", action="store_true",
-                        help="Run ThetaData scan")
+                        help="Run FF scanner")
+    parser.add_argument("--ibkr", action="store_true",
+                        help="Use IBKR live data for scanning (sequential)")
+    parser.add_argument("--parallel", action="store_true",
+                        help="Use IBKR parallel scanner (multi-connection, mass scan)")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="Number of parallel IBKR connections (default: 4)")
+    parser.add_argument("--port", type=int, default=4002,
+                        help="IBKR Gateway port (4002=paper, 4001=live)")
     parser.add_argument("--trade", action="store_true",
                         help="Close J-1 + Enter new (IBKR required)")
     parser.add_argument("--paper", action="store_true",
@@ -1255,9 +1315,18 @@ def main():
     trade_result = None
     monitor_data = None
 
-    # Launch Theta Terminal if needed
-    from core.config import ensure_theta_terminal
-    ensure_theta_terminal()
+    # Determine scan mode
+    if args.parallel:
+        scan_mode = "parallel"
+    elif args.ibkr:
+        scan_mode = "ibkr"
+    else:
+        scan_mode = "theta"
+
+    # Launch Theta Terminal only if needed (not for IBKR modes)
+    if scan_mode == "theta":
+        from core.config import ensure_theta_terminal
+        ensure_theta_terminal()
 
     # Apply dry_run from config if not overridden on CLI
     dry_run = args.dry_run or config.get("strategy", {}).get("dry_run", False)
@@ -1265,7 +1334,8 @@ def main():
     log.info(f"Autopilot started - "
              f"scan={args.scan} trade={args.trade} paper={args.paper} "
              f"daemon={args.daemon} monitor={args.monitor} "
-             f"report={args.report} full={args.full} dry_run={dry_run}")
+             f"report={args.report} full={args.full} "
+             f"scan_mode={scan_mode} dry_run={dry_run}")
 
     try:
         # --daemon: infinite loop scheduler
@@ -1275,7 +1345,7 @@ def main():
 
         # --paper: one-shot paper trading pipeline
         if args.paper:
-            signals = run_scan()
+            signals = run_scan(mode=scan_mode, port=args.port, n_workers=args.workers)
             if signals is None:
                 send_alert("Scan Failed",
                            "Scanner returned no data. Paper trade skipped.",
@@ -1296,7 +1366,7 @@ def main():
 
             if args.full:
                 # Full pipeline (IBKR)
-                signals = run_scan()
+                signals = run_scan(mode=scan_mode, port=args.port, n_workers=args.workers)
                 if signals is None:
                     send_alert("Scan Failed",
                                "Scanner returned no data. Trade skipped.",
@@ -1309,7 +1379,7 @@ def main():
                 return
 
         if args.scan:
-            run_scan()
+            run_scan(mode=scan_mode, port=args.port, n_workers=args.workers)
 
         if args.trade:
             trade_result = run_trade(dry_run=dry_run, config=config)

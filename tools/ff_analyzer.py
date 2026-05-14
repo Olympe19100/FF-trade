@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.scanner import (
     fetch_option_chain_thetadata, fetch_option_chain_eodhd,
-    compute_ff, bs_delta_vec,
+    bs_delta_vec,
     implied_vol_vec, get_earnings_dates, has_earnings_between,
     get_sp500_tickers,
     DTE_COMBOS, DTE_TOL, STRIKE_PCT, TARGET_DELTA, MIN_OI_LEG, MIN_MID,
@@ -76,7 +76,7 @@ def _analyze_and_print_combo(ticker, stock_px, calls, puts,
     """Analyze one DTE combo and print full detail, even if it fails checks."""
     combo = f"{short_dte}-{long_dte}"
     warnings = []   # non-fatal issues
-    skip = None     # fatal: stops further analysis
+
 
     # ── Front call selection ──
     front = calls[
@@ -302,22 +302,22 @@ def _analyze_and_print_combo(ticker, stock_px, calls, puts,
         if fwd_vol is not None:
             print(f"    fwd_vol = sqrt(fwd_var)       = {fwd_vol:.4f} ({fwd_vol*100:.2f}%)")
         else:
-            print(f"    fwd_vol = N/A (negative fwd_var)")
+            print("    fwd_vol = N/A (negative fwd_var)")
     else:
-        print(f"    fwd_var = N/A (dT <= 0)")
+        print("    fwd_var = N/A (dT <= 0)")
 
     # Forward Factor
     print()
     print("  Forward Factor:")
     if ff is not None and fwd_vol is not None:
-        print(f"    FF = (s1 - fwd_vol) / fwd_vol")
+        print("    FF = (s1 - fwd_vol) / fwd_vol")
         print(f"    FF = ({s1:.4f} - {fwd_vol:.4f}) / {fwd_vol:.4f}")
         passes = ff >= FF_THRESHOLD_DEFAULT
         threshold_mark = ">=" if passes else "<"
         print(f"    FF = {ff:.4f} = {ff*100:.2f}%"
               f"          [{threshold_mark} {FF_THRESHOLD_DEFAULT*100:.0f}% threshold]")
     else:
-        print(f"    FF = N/A")
+        print("    FF = N/A")
 
     # Strikes
     print()

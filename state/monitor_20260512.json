@@ -1,0 +1,68 @@
+{
+  "type": "snapshot",
+  "positions": [
+    {
+      "ticker": "AAPY",
+      "combo": "",
+      "contracts": 92,
+      "strike": 26.0,
+      "put_strike": 26.0,
+      "entry_cost": 1.96,
+      "current_cost": 1.26,
+      "unrealized_pnl": -6430.13,
+      "return_pct": -0.3571,
+      "front_dte": -1,
+      "stock_px": 0,
+      "source": "ibkr"
+    },
+    {
+      "ticker": "ABCB",
+      "combo": "",
+      "contracts": 3,
+      "strike": 90.0,
+      "put_strike": 90.0,
+      "entry_cost": 4.9,
+      "current_cost": 2.1,
+      "unrealized_pnl": -839.68,
+      "return_pct": -0.5713,
+      "front_dte": -1,
+      "stock_px": 0,
+      "source": "ibkr"
+    },
+    {
+      "ticker": "ABNY",
+      "combo": "",
+      "contracts": 53,
+      "strike": 43.0,
+      "put_strike": 43.0,
+      "entry_cost": 3.4,
+      "current_cost": 1.02,
+      "unrealized_pnl": -12592.28,
+      "return_pct": -0.6989,
+      "front_dte": -1,
+      "stock_px": 0,
+      "source": "ibkr"
+    },
+    {
+      "ticker": "AGYS",
+      "combo": "",
+      "contracts": 123,
+      "strike": 75.0,
+      "put_strike": 75.0,
+      "entry_cost": -2.99,
+      "current_cost": -3.46,
+      "unrealized_pnl": -5745.56,
+      "return_pct": 0,
+      "front_dte": 36,
+      "stock_px": 0,
+      "source": "ibkr"
+    }
+  ],
+  "errors": [],
+  "total_unrealized_pnl": -25607.65,
+  "n_active": 4,
+  "n_priced": 4,
+  "date": "2026-05-12",
+  "time": "23:30:59",
+  "timestamp": 1778621459.9780903
+}

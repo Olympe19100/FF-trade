@@ -26,7 +26,6 @@ from core.config import (
     THETADATA_WS_QUOTE_TIMEOUT,
     THETADATA_WS_SPREAD_TIMEOUT,
     THETADATA_WS_RECONNECT_MAX,
-    COMMISSION_LEG,
     get_logger,
 )
 

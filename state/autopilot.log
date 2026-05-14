@@ -1,41 +1,68 @@
-[2026-04-28 00:24:20] [INFO] ============================================================
-[2026-04-28 00:24:20] [INFO] AUTOPILOT - MONITOR (ThetaData)
-[2026-04-28 00:24:20] [INFO] ============================================================
-[2026-04-28 00:24:20] [INFO] MONITOR: Pricing 1 active positions via ThetaData
-[2026-04-28 00:24:22] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
-[2026-04-28 00:24:30] [WARNING] MONITOR: Cannot match call legs for CTAS K=200.0 2026-05-15/2026-06-18
-[2026-04-28 00:24:37] [WARNING] MONITOR: Cannot match call legs for NOC K=755.0 2026-05-15/2026-06-18
-[2026-04-28 00:24:40] [WARNING] MONITOR: Cannot match call legs for HCA K=535.0 2026-05-15/2026-06-18
-[2026-04-28 00:38:02] [INFO] ============================================================
-[2026-04-28 00:38:02] [INFO] AUTOPILOT - MONITOR (ThetaData)
-[2026-04-28 00:38:02] [INFO] ============================================================
-[2026-04-28 00:38:02] [INFO] MONITOR: Pricing 1 active positions via ThetaData
-[2026-04-28 00:38:05] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
-[2026-04-28 00:38:08] [WARNING] MONITOR: Cannot match call legs for CTAS K=200.0 2026-05-15/2026-06-18
-[2026-04-28 00:38:10] [INFO] ============================================================
-[2026-04-28 00:38:10] [INFO] AUTOPILOT - MONITOR (ThetaData)
-[2026-04-28 00:38:10] [INFO] ============================================================
-[2026-04-28 00:38:10] [INFO] MONITOR: Pricing 1 active positions via ThetaData
-[2026-04-28 00:38:11] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
-[2026-04-28 00:38:15] [WARNING] MONITOR: Cannot match call legs for NOC K=755.0 2026-05-15/2026-06-18
-[2026-04-28 00:38:17] [WARNING] MONITOR: Cannot match call legs for HCA K=535.0 2026-05-15/2026-06-18
-[2026-04-28 09:01:40] [INFO] ============================================================
-[2026-04-28 09:01:40] [INFO] AUTOPILOT - MONITOR (ThetaData)
-[2026-04-28 09:01:40] [INFO] ============================================================
-[2026-04-28 09:01:40] [INFO] MONITOR: Pricing 20 active positions via ThetaData
-[2026-04-28 09:02:02] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
-[2026-04-28 09:06:13] [INFO] ============================================================
-[2026-04-28 09:06:13] [INFO] AUTOPILOT - MONITOR (ThetaData)
-[2026-04-28 09:06:13] [INFO] ============================================================
-[2026-04-28 09:06:13] [INFO] MONITOR: Pricing 20 active positions via ThetaData
-[2026-04-28 09:06:34] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
-[2026-04-28 09:40:45] [INFO] ============================================================
-[2026-04-28 09:40:45] [INFO] AUTOPILOT - MONITOR (ThetaData)
-[2026-04-28 09:40:45] [INFO] ============================================================
-[2026-04-28 09:40:45] [INFO] MONITOR: Pricing 20 active positions via ThetaData
-[2026-04-28 09:41:06] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
-[2026-04-28 12:59:43] [INFO] ============================================================
-[2026-04-28 12:59:43] [INFO] AUTOPILOT - MONITOR (ThetaData)
-[2026-04-28 12:59:43] [INFO] ============================================================
-[2026-04-28 12:59:43] [INFO] MONITOR: Pricing 20 active positions via ThetaData
-[2026-04-28 13:00:14] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260428.json
+[2026-05-14 15:00:29] [INFO] DAEMON: [SCAN] Starting scheduled scan...
+[2026-05-14 15:00:29] [INFO] ============================================================
+[2026-05-14 15:00:29] [INFO] AUTOPILOT - SCAN [THETA]
+[2026-05-14 15:00:29] [INFO] ============================================================
+[2026-05-14 15:03:20] [INFO] SCAN: Found 45 signals (top 5: MCD, KO, DIS, BA, ANET)
+[2026-05-14 15:03:20] [DEBUG]   MCD 15-64 FF=0.285 cost=$4.22
+[2026-05-14 15:03:20] [DEBUG]   KO 15-64 FF=0.267 cost=$1.23
+[2026-05-14 15:03:20] [DEBUG]   DIS 15-64 FF=0.217 cost=$1.7
+[2026-05-14 15:03:20] [DEBUG]   BA 15-64 FF=0.188 cost=$6.68
+[2026-05-14 15:03:20] [DEBUG]   ANET 15-64 FF=0.179 cost=$5.68
+[2026-05-14 15:03:20] [INFO] DAEMON: [SCAN] Scan completed
+[2026-05-14 15:57:31] [INFO] ============================================================
+[2026-05-14 15:57:31] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-14 15:57:31] [INFO] ============================================================
+[2026-05-14 15:57:31] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-14 15:57:31] [INFO]   Closing AAPL 30-60 (front exp 2026-05-15, 0d left)
+[2026-05-14 15:57:31] [INFO]   CLOSED AAPL exit=$7.00 P&L=$+134.80 (+11.1%)
+[2026-05-14 15:57:31] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-14 15:57:31] [INFO]   No signals available
+[2026-05-14 15:57:31] [INFO] PAPER complete: 1 closed, 0 entered
+[2026-05-14 15:57:31] [INFO] ============================================================
+[2026-05-14 15:57:31] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-14 15:57:31] [INFO] ============================================================
+[2026-05-14 15:57:31] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-14 15:57:31] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-14 15:57:31] [INFO]   No signals available
+[2026-05-14 15:57:31] [INFO] PAPER complete: 0 closed, 0 entered
+[2026-05-14 15:57:31] [INFO] ============================================================
+[2026-05-14 15:57:31] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-14 15:57:31] [INFO] ============================================================
+[2026-05-14 15:57:31] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-14 15:57:31] [INFO]   Closing AAPL 30-60 (front exp 2026-05-15, 0d left)
+[2026-05-14 15:57:31] [WARNING]   Cannot price AAPL for close, skipping
+[2026-05-14 15:57:31] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-14 15:57:31] [INFO]   No signals available
+[2026-05-14 15:57:31] [INFO] PAPER complete: 0 closed, 0 entered
+[2026-05-14 15:57:31] [INFO] ============================================================
+[2026-05-14 15:57:31] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-14 15:57:31] [INFO] ============================================================
+[2026-05-14 15:57:31] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-14 15:57:31] [INFO]   Closing AAPL 30-60 (front exp 2026-05-14, -1d left)
+[2026-05-14 15:57:31] [INFO]   CLOSED AAPL exit=$7.50 P&L=$+234.80 (+19.0%)
+[2026-05-14 15:57:31] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-14 15:57:31] [INFO]   No signals available
+[2026-05-14 15:57:31] [INFO] PAPER complete: 1 closed, 0 entered
+[2026-05-14 15:57:31] [ERROR] DAEMON: [DAEMON] Scheduler error: 'NoneType' object has no attribute 'run_pending'
+[2026-05-14 15:57:31] [INFO] DAEMON: [DAEMON] Daemon started — schedule: 09:00 Scan | 10:15 Trade | 13:30 Retry | 16:30 Monitor
+[2026-05-14 15:57:31] [INFO] DAEMON: [DAEMON] Daemon stopped
+[2026-05-14 15:57:31] [WARNING] DAEMON: [TRADE] No IBKR state available — skipping trade
+[2026-05-14 16:15:20] [INFO] DAEMON: [TRADE] Starting scheduled trade...
+[2026-05-14 16:15:20] [INFO] TRADE_WEB Step 1: Closing expiring positions
+[2026-05-14 16:15:20] [INFO] TRADE_WEB Step 2: Entering new positions
+[2026-05-14 16:21:18] [ERROR] TRADE_WEB error: cannot convert float NaN to integer
+Traceback (most recent call last):
+  File "C:\Users\ANTEC MSI\Desktop\pro\Option trading\core\autopilot.py", line 975, in run_trade_web
+    max_new = strat_cfg.get("max_positions", 20) - len(active_after)
+                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~
+  File "C:\Users\ANTEC MSI\Desktop\pro\Option trading\core\trader.py", line 1084, in enter_new_positions
+    fill_price=fill_cost,
+          ^^^^^^^^^^^^^^^
+ValueError: cannot convert float NaN to integer
+[2026-05-14 16:21:18] [INFO] DAEMON: [TRADE] Trade completed: 0 closed, 0 entered
+[2026-05-14 16:21:18] [ERROR] DAEMON: [TRADE] Error: TRADE_WEB error: cannot convert float NaN to integer
+[2026-05-14 16:46:33] [INFO] DAEMON: [DAEMON] Daemon started — schedule: 09:00 Scan | 10:15 Trade | 13:30 Retry | 16:30 Monitor
+[2026-05-14 17:20:48] [INFO] DAEMON: [DAEMON] Daemon started — schedule: 09:00 Scan | 10:15 Trade | 13:30 Retry | 16:30 Monitor
+[2026-05-14 19:30:18] [INFO] DAEMON: [RETRY] Starting intra-day retry...
+[2026-05-14 19:30:18] [ERROR] DAEMON: [RETRY] Intra-day retry failed: 'str' object has no attribute 'get'
+[2026-05-14 19:51:30] [INFO] DAEMON: [DAEMON] Daemon started — schedule: 09:00 Scan | 10:15 Trade | 13:30 Retry | 16:30 Monitor

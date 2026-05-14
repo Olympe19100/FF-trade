@@ -1,14 +1,29 @@
 """Trading routes — connection, orders, portfolio management."""
 
 import json
+import math
 import numpy as np
 import pandas as pd
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 
+
+def _sanitize(obj):
+    """Replace NaN/inf with None recursively so JSON serialization won't crash."""
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, (np.floating, np.integer)):
+        v = float(obj)
+        return None if math.isnan(v) or math.isinf(v) else v
+    return obj
+
 from core.config import (
-    STATE, OUTPUT, TRADES_FILE, BACKTEST_TRADES_FILE,
+    OUTPUT, TRADES_FILE,
     MAX_POSITIONS, BA_PCT_MAX, COMMISSION_LEG, CONTRACT_MULT,
     SLIPPAGE_PER_LEG, FF_THRESHOLD_DEFAULT,
     _theta_terminal_alive, load_json, CONFIG_FILE,
@@ -25,15 +40,28 @@ from core.trader import (
     close_position_ibkr, check_optimal_window,
     create_calendar_legs, execute_spread_optimal,
 )
-from core.pricing import RISK_FREE_RATE
 from api.models import LoginRequest, ConnectRequest, EnterRequest, AddPositionRequest, ClosePositionRequest
 from api.ibkr_worker import (
     ib_state, order_log, run_in_ib_thread, log_order,
     safe_disconnect, next_client_id,
+    trigger_reconnect, suppress_reconnect,
 )
 from core.autopilot import daemon
 
 router = APIRouter(prefix="/api")
+
+
+def _attach_disconnect_handler(ib) -> None:
+    """Attach a disconnectedEvent handler that triggers auto-reconnect."""
+    from core.config import get_logger
+    log = get_logger("api.ibkr")
+
+    def _on_disconnected():
+        ib_state["connected"] = False
+        log.warning("IBKR connection lost (event)")
+        trigger_reconnect()
+
+    ib.disconnectedEvent += _on_disconnected
 
 
 # ═══════════════════════════════════════════════════════════
@@ -255,9 +283,6 @@ async def api_sizing(account_value: float = 1_023_443):
     if "ba_pct" in signals.columns:
         signals = signals[signals["ba_pct"] <= BA_PCT_MAX]
 
-    # Double calendars only — reject singles (no put leg)
-    signals = signals[signals["dbl_cost"].notna() & (signals["dbl_cost"] > 0)]
-
     # Keep only positive FF (backwardation)
     signals = signals[signals["ff"] > 0]
 
@@ -284,9 +309,8 @@ async def api_sizing(account_value: float = 1_023_443):
     signals_info = []
     sig_details = []
     for _, r in eligible.iterrows():
-        has_dbl = pd.notna(r.get("dbl_cost")) and r["dbl_cost"] > 0
-        cps = r["dbl_cost"] if has_dbl else r["call_cost"]
-        n_legs = 4 if has_dbl else 2
+        cps = r["call_cost"]
+        n_legs = 2
         signals_info.append((r["ticker"], cps, n_legs))
         sig_details.append(r.to_dict())
 
@@ -303,9 +327,9 @@ async def api_sizing(account_value: float = 1_023_443):
             "contracts": contracts,
             "deployed": round(deployed, 2),
             "ff": detail.get("ff", 0),
-            **{k: detail[k] for k in ["combo", "strike", "put_strike", "stock_px",
+            **{k: detail[k] for k in ["combo", "strike", "stock_px",
                "front_exp", "back_exp", "front_iv", "back_iv", "call_cost",
-               "put_cost", "dbl_cost", "ba_pct"] if k in detail},
+               "ba_pct"] if k in detail},
         })
 
     return {
@@ -365,7 +389,7 @@ async def api_portfolio():
     # P&L history
     pnl_history = load_pnl_history()
 
-    return {
+    return _sanitize({
         "active": active,
         "closed": closed,
         "n_active": len(active),
@@ -381,7 +405,7 @@ async def api_portfolio():
             "n_losses": n_losses,
         },
         "pnl_history": pnl_history,
-    }
+    })
 
 
 @router.post("/portfolio/add")
@@ -420,12 +444,9 @@ async def api_portfolio_add(req: AddPositionRequest):
             ib = ib_state["ib"]
 
             # Step 1: Qualify contracts
-            is_double = req.spread_type == "double"
             legs, n_legs, actual_strike, actual_put_strike = create_calendar_legs(
                 ib, req.ticker, req.strike,
                 req.front_exp, req.back_exp,
-                double=is_double,
-                put_strike=req.put_strike,
             )
             if not legs:
                 return {"error": f"Cannot qualify contracts for {req.ticker} on IBKR"}
@@ -470,7 +491,7 @@ async def api_portfolio_add(req: AddPositionRequest):
         # Full fill — add to portfolio with actual fill cost
         fill_cost = exec_result["fill_cost"]
         actual_strike = exec_result["actual_strike"]
-        actual_put_strike = exec_result["actual_put_strike"]
+        _ = exec_result["actual_put_strike"]
 
         pos = add_position(
             portfolio,
@@ -481,10 +502,9 @@ async def api_portfolio_add(req: AddPositionRequest):
             back_exp=req.back_exp,
             contracts=req.contracts,
             cost_per_share=fill_cost,
-            spread_type=req.spread_type,
+            spread_type="single",
             ff=req.ff,
             n_legs=exec_result["n_legs"],
-            put_strike=actual_put_strike or req.put_strike,
         )
         pos["execution_method"] = exec_result["details"].get("method")
         pos["slippage"] = round(exec_result["slippage"], 4)
@@ -514,10 +534,9 @@ async def api_portfolio_add(req: AddPositionRequest):
         back_exp=req.back_exp,
         contracts=req.contracts,
         cost_per_share=req.cost_per_share,
-        spread_type=req.spread_type,
+        spread_type="single",
         ff=req.ff,
         n_legs=req.n_legs,
-        put_strike=req.put_strike,
     )
     save_portfolio(portfolio)
 
@@ -808,14 +827,7 @@ async def api_connect(req: ConnectRequest):
         ib_state["port"] = req.port
         ib_state["connect_time"] = datetime.now().isoformat()
 
-        def _on_disconnected():
-            ib_state["connected"] = False
-            # We don't nullify ib_state["ib"] immediately to allow retry logic
-            # but we mark it as disconnected.
-            from core.config import get_logger
-            get_logger("api.ibkr").warning("IBKR connection lost (event)")
-
-        ib.disconnectedEvent += _on_disconnected
+        _attach_disconnect_handler(ib)
 
         log_order("connect", f"Connected to {acct} @ {req.host}:{req.port}")
 
@@ -845,9 +857,13 @@ async def api_connect(req: ConnectRequest):
 @router.post("/disconnect")
 async def api_disconnect():
     """Disconnect from IBKR."""
-    run_in_ib_thread(safe_disconnect)
-    log_order("disconnect", "Disconnected from IBKR")
-    return {"status": "disconnected"}
+    suppress_reconnect(True)
+    try:
+        run_in_ib_thread(safe_disconnect)
+        log_order("disconnect", "Disconnected from IBKR")
+        return {"status": "disconnected"}
+    finally:
+        suppress_reconnect(False)
 
 
 @router.get("/gateway_status")
@@ -975,12 +991,7 @@ async def api_gateway_connect(port: int = 4002):
         ib_state["port"] = port
         ib_state["connect_time"] = datetime.now().isoformat()
 
-        def _on_disconnected():
-            ib_state["connected"] = False
-            from core.config import get_logger
-            get_logger("api.ibkr").warning("IBKR/Gateway connection lost (event)")
-
-        ib.disconnectedEvent += _on_disconnected
+        _attach_disconnect_handler(ib)
 
         log_order("login", f"Logged in via IBC → {acct} on port {port}")
 
@@ -1159,3 +1170,29 @@ async def api_daemon_stop():
 async def api_daemon_status():
     """Return daemon status, schedule, and recent logs."""
     return daemon.status()
+
+
+# ═══════════════════════════════════════════════════════════════
+#  EXECUTION ANALYTICS (TCA + Fill DB)
+# ═══════════════════════════════════════════════════════════════
+
+@router.get("/execution/stats")
+async def api_execution_stats():
+    """Aggregate TCA summary + fill rate statistics."""
+    from core.tca import tca_summary
+    from core.fill_db import load_fill_stats
+    return {
+        "tca": tca_summary(),
+        "fill_stats": load_fill_stats(),
+    }
+
+
+@router.get("/execution/stats/{ticker}")
+async def api_execution_stats_ticker(ticker: str):
+    """Per-ticker TCA + routing info."""
+    from core.tca import tca_summary
+    from core.fill_db import get_ticker_routing_info
+    return {
+        "tca": tca_summary(ticker=ticker),
+        "routing": get_ticker_routing_info(ticker),
+    }

@@ -1,0 +1,32 @@
+{
+  "type": "snapshot",
+  "positions": [],
+  "errors": [
+    "AAPL",
+    "C",
+    "CHTR",
+    "FCX",
+    "GE",
+    "HAL",
+    "IBM",
+    "INTC",
+    "KO",
+    "LLY",
+    "MO",
+    "MRK",
+    "MSFT",
+    "MU",
+    "NFLX",
+    "NOW",
+    "PG",
+    "PM",
+    "TSLA",
+    "TXN"
+  ],
+  "total_unrealized_pnl": 0,
+  "n_active": 20,
+  "n_priced": 0,
+  "date": "2026-05-02",
+  "time": "00:29:18",
+  "timestamp": 1777674558.599361
+}

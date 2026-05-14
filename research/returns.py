@@ -31,7 +31,7 @@ from pathlib import Path
 from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from core.config import ROOT, DB, CACHE
+from core.config import DB, CACHE
 
 
 def int_to_date(d):
@@ -314,7 +314,7 @@ def compute_returns(test_mode=False):
         # Double calendar stats
         if "double_ret" in df.columns:
             dbl = df.dropna(subset=["double_ret"])
-            print(f"\n--- DOUBLE CALENDAR ---")
+            print("\n--- DOUBLE CALENDAR ---")
             for combo in sorted(dbl["combo"].unique()):
                 sub = dbl[dbl["combo"] == combo]
                 wins = (sub["double_ret"] > 0).mean()

@@ -39,8 +39,8 @@ class AddPositionRequest(BaseModel):
     contracts: int = 1
     cost_per_share: float
     ff: float
-    spread_type: str = "double"
-    n_legs: int = 4
+    spread_type: str = "single"
+    n_legs: int = 2
     send_to_ibkr: Optional[bool] = None  # None=auto, True=force IBKR, False=track only
 
 

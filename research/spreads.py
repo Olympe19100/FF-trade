@@ -16,13 +16,12 @@ import sqlite3
 import numpy as np
 import pandas as pd
 import pickle
-from pathlib import Path
 from datetime import datetime
 import warnings
 warnings.filterwarnings("ignore")
 
 from core.config import (
-    ROOT, DB, CACHE,
+    DB, CACHE,
     FRONT_DTE_MIN, FRONT_DTE_MAX, BACK_DTE_MIN, BACK_DTE_MAX, MIN_DTE_GAP,
 )
 from core.pricing import implied_vol_vec, bs_delta_vec, RISK_FREE_RATE

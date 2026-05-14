@@ -180,7 +180,7 @@ def step3_distribution(df, ret_col="ret", label="Call Calendar"):
         print(f"per month: {per_month:.2f}")
 
         # Tail quantiles
-        print(f"\nTail Quantiles:")
+        print("\nTail Quantiles:")
         for pct in [0.05, 0.01, 0.001, 0.0001]:
             q = r.quantile(pct)
             cnt = (r <= q).sum()
@@ -282,7 +282,7 @@ def step5_model(df, ret_col="ret", label="Call Calendar"):
         threshold = FF_CROSSOVER_OLD.get(combo, 0.0)
 
         model = sub[sub["ff"] >= threshold].copy()
-        baseline = sub.copy()
+
 
         per_year = len(model) / n_years
         per_month = per_year / 12
@@ -304,7 +304,7 @@ def step5_model(df, ret_col="ret", label="Call Calendar"):
         print(f"per month: {per_month:.2f}")
 
         # Tail quantiles
-        print(f"\nTail Quantiles:")
+        print("\nTail Quantiles:")
         r = model[ret_col]
         for pct in [0.05, 0.01, 0.001, 0.0001]:
             q = r.quantile(pct)
@@ -403,7 +403,7 @@ def step6_filtered(df, ret_col="ret", label="Call Calendar"):
     d0 = _dt.strptime(str(obs_min), "%Y%m%d")
     d1 = _dt.strptime(str(obs_max), "%Y%m%d")
     n_years = max((d1 - d0).days / 365.25, 0.1)
-    n_quarters = int(n_years * 4)
+
 
     for combo in sorted(df["combo"].unique()):
         sub = df[df["combo"] == combo].copy()
@@ -454,7 +454,7 @@ def step6_filtered(df, ret_col="ret", label="Call Calendar"):
         print(f"per month: {per_month:.2f}")
 
         # Tail quantiles
-        print(f"\nTail Quantiles:")
+        print("\nTail Quantiles:")
         for pct in [0.05, 0.01, 0.001, 0.0001]:
             q = r.quantile(pct)
             cnt = (r <= q).sum()
@@ -507,7 +507,7 @@ def step6_filtered(df, ret_col="ret", label="Call Calendar"):
         rets = model[ret_col].values
         f_star, max_growth, f_arr, g_arr = generalized_kelly(rets)
 
-        print(f"\nKelly Criterion:")
+        print("\nKelly Criterion:")
         print(f"  f* = {f_star:.3f} (Generalized Kelly)")
         print(f"  Expected log growth rate: {max_growth:.6f}")
 

@@ -42,9 +42,14 @@ TRADES_FILE    = STATE / "trades.json"
 LOG_FILE       = STATE / "autopilot.log"
 
 BACKTEST_TRADES_FILE = OUTPUT / "backtest_trades.csv"
+PENDING_SIGNALS_FILE = STATE / "pending_signals.json"
+
+# ── Pending Signals Retry ──
+MAX_PENDING_AGE_DAYS  = 5     # Abandon after 5 days
+MIN_FRONT_DTE_PENDING = 5     # Don't retry if front expires in < 5 days
 
 # ── Strategy constants (match backtest.py) ──
-MAX_POSITIONS    = 20
+MAX_POSITIONS    = 35
 MAX_CONTRACTS    = 10
 DEFAULT_ALLOC    = 0.04       # 4% per name
 KELLY_FRAC       = 0.5        # Half Kelly
@@ -53,7 +58,7 @@ CONTRACT_MULT    = 100
 COMMISSION_LEG   = 0.65       # $/leg
 SLIPPAGE_PER_LEG = 0.03       # $/leg/share slippage (Muravyev & Pearson 2020)
 SLIPPAGE_BUFFER  = 0.03       # Legacy alias — use SLIPPAGE_PER_LEG * n_legs instead
-CLOSE_DAYS       = 1          # Close J-1 before front expiry
+CLOSE_DAYS       = 0          # Close J-0 (expiration day, 15min before close)
 
 # ── Execution constants ──
 FILL_TIMEOUT     = 30         # Seconds to wait per price level
@@ -68,9 +73,91 @@ LEG_WALK_STEP    = 0.02       # (legacy — unused with Adaptive Algo)
 LEG_WALK_WAIT    = 20         # (legacy — unused with Adaptive Algo)
 LEG_MAX_WALK     = 0.15       # (legacy — unused with Adaptive Algo)
 LEG_TIMEOUT      = 45         # Adaptive Urgent fills quickly
+
+# ── Order slicing (Almgren & Chriss 2000: minimize market impact) ──
+SLICE_THRESHOLD  = 5          # Orders above this get sliced
+SLICE_SIZE       = 5          # Contracts per slice
+SLICE_PAUSE      = 90         # Seconds between slices (let order book replenish)
 OPTIMAL_START_ET = "10:00"    # ET optimal window start
 OPTIMAL_END_ET   = "15:00"    # ET optimal window end
 ENFORCE_WINDOW   = True       # Block orders outside optimal window
+
+# ── Adaptive Walk (Cont & Kukanov 2017) ──
+WALK_STEP_PCT          = 0.20    # Walk step = 20% of bid-ask spread
+WALK_STEP_MIN          = 0.01   # Minimum walk step $/share
+TIGHT_SPREAD_THRESHOLD = 0.10   # Spread < $0.10 → passive initial price
+
+# ── Exponential Backoff (CFM 2018) ──
+WALK_BACKOFF_FACTOR    = 1.25   # Wait multiplier per walk step (was 1.5 — more granular walk steps)
+WALK_BACKOFF_CAP       = 2.0    # Max wait = initial × cap
+
+# ── Adaptive Slice Pause (Bouchaud et al. 2009) ──
+SLICE_PAUSE_LIQUID     = 60     # OI >= 5000: 60s between slices
+SLICE_PAUSE_NORMAL     = 90     # 500 <= OI < 5000: 90s
+SLICE_PAUSE_ILLIQUID   = 120    # OI < 500: 120s
+SLICE_PAUSE_OI_THRESHOLD_HIGH = 5000
+SLICE_PAUSE_OI_THRESHOLD_LOW  = 500
+
+# ── Stagger Closes (Moallemi & Park 2018) ──
+CLOSE_PAUSE            = 60     # Seconds between close executions
+
+# ── Execution Window — Sweet Spot (Muravyev & Pearson 2020) ──
+SWEET_SPOT_START_ET    = "10:30"
+SWEET_SPOT_END_ET      = "11:30"
+
+# ── Underlying Filter (Huh & Lin 2013) ──
+MAX_UNDERLYING_BA      = 0.001  # Skip if underlying BA spread > 0.1% of stock price
+
+# ── TCA Framework (Kissell & Glantz 2003) ──
+EXECUTION_LOG_FILE     = STATE / "execution_log.json"
+
+# ── Adaptive Routing (Almgren & Lorenz 2007) ──
+FILL_STATS_FILE          = STATE / "fill_stats.json"
+MIN_ATTEMPTS_FOR_ROUTING = 3
+COMBO_SKIP_THRESHOLD     = 0.25
+
+# ── Sweet Spot Gate (Muravyev & Pearson 2020) ──
+SWEET_SPOT_GATE            = False
+SWEET_SPOT_AGGRESSION_BOOST = True
+
+# ── Almgren Integration ──
+USE_ALMGREN_SIZING = True
+
+# ── Active Netting (Man Group 2024) ──
+ENABLE_NETTING = True
+
+# ── Anti-Gaming Randomization (Wyart et al. 2008, BIS 2020) ──
+JITTER_PCT             = 0.20   # ±20% variance on walk step, wait, and slice pause
+ENABLE_JITTER          = True   # Master switch for randomization
+
+# ── Spread Circuit Breaker (Hasbrouck 2007) ──
+BA_WIDEN_ABORT         = 2.0    # Abort if live BA > 2× signal BA
+ENABLE_BA_CIRCUIT_BREAKER = True
+
+# ── IBKR Quote Settle (market data stabilization) ──
+IBKR_QUOTE_SETTLE      = 5     # Seconds to wait for IBKR reqMktData to stabilize
+
+# ── Inter-Signal Pause (let IBKR event loop settle) ──
+INTER_SIGNAL_PAUSE     = 5     # Seconds between signal executions
+
+# ── Max Combo Walk Steps (absolute safety cap) ──
+MAX_COMBO_WALK_STEPS   = 8     # Absolute cap on combo walk steps
+
+# ── Quote Sniping (sample best spread before placing) ──
+QUOTE_SNIPE_SAMPLES    = 3     # Number of quote samples before placing
+QUOTE_SNIPE_INTERVAL   = 5     # Seconds between samples
+
+# ── Exchange Fallback (BOX price improvement auction) ──
+FALLBACK_EXCHANGE        = "BOX"
+ENABLE_EXCHANGE_FALLBACK = True
+
+# ── Intra-Day Retry (afternoon retry for morning failures) ──
+RETRY_TIME_ET          = "13:30"
+ENABLE_INTRADAY_RETRY  = True
+
+# ── Participation Rate Cap (Almgren et al. 2005) ──
+MAX_PARTICIPATION_RATE = 0.05   # Max 5% of estimated daily option volume
+ENABLE_PARTICIPATION_CAP = True
 
 # ── IBKR Connection ──
 TWS_LIVE     = 7496
@@ -96,6 +183,10 @@ TARGET_DELTA = 0.35
 FF_THRESHOLD_DEFAULT = 0.200
 MIN_COST     = 1.00
 MIN_OI_LEG   = 100
+MAX_PCT_OF_OI = 0.05    # Max 5% of the least-liquid leg's OI (Almgren & Chriss 2000)
+OI_LEG_HARD_GATE = 0.10 # Refuse trade if contracts > 10% of ANY single leg's OI
+MAX_BA_PCT    = 0.40    # Skip if bid-ask > 40% of spread cost
+OI_FULL_SIZE  = 1000    # OI >= this gets full allocation weight; below = proportional discount
 MIN_MID      = 0.25
 BA_PCT_MAX   = 0.10           # 10% max bid-ask spread — reject illiquid spreads
 TOP_N        = 20

@@ -1,5 +1,5 @@
 """
-Portfolio Backtest — Forward Factor Double Calendar Spreads
+Portfolio Backtest — Forward Factor Calendar Spreads
 
 Single combined portfolio:
   - $100K starting capital
@@ -19,8 +19,6 @@ import sqlite3
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from pathlib import Path
-
 from core.config import CACHE, OUTPUT, DB, get_logger
 log = get_logger(__name__)
 OUT = OUTPUT
@@ -225,7 +223,6 @@ def _compute_mtm_value(positions, date_int, conn, cid_cache, mode):
             prices[cid] = close_px
 
     # Compute per-position MTM
-    n_legs = 4 if mode == "double" else 2
     leg_prices = {}  # (pos_idx, leg_label) -> mid
     for cid, mappings in needed.items():
         mid = prices.get(cid)
@@ -260,7 +257,7 @@ def _compute_mtm_value(positions, date_int, conn, cid_cache, mode):
     return total_mtm if any_priced else None
 
 
-def run_portfolio(df, mode="double"):
+def run_portfolio(df, mode="single"):
     """
     Run single combined portfolio across all combos.
     mode: "double" (call+put) or "single" (call only)
@@ -765,17 +762,7 @@ if __name__ == "__main__":
              COMMISSION_PER_LEG, COMMISSION_PER_LEG * 2, COMMISSION_PER_LEG * 4)
     log.info("  Max cts:     %d/position", MAX_CONTRACTS)
 
-    # ── Double Calendar Portfolio (all combos combined) ──
-    log.info("\n%s", "#" * 60)
-    log.info("# DOUBLE CALENDAR PORTFOLIO (all combos, top 20 by FF)")
-    log.info("%s", "#" * 60)
-    result_dbl = run_portfolio(df, mode="double")
-    if result_dbl:
-        print_stats(result_dbl)
-        plot_results(result_dbl)
-        save_track_record(result_dbl)
-
-    # ── Single Calendar Portfolio for comparison ──
+    # ── Single Calendar Portfolio (primary) ──
     log.info("\n%s", "#" * 60)
     log.info("# SINGLE CALENDAR PORTFOLIO (all combos, top 20 by FF)")
     log.info("%s", "#" * 60)
@@ -783,6 +770,16 @@ if __name__ == "__main__":
     if result_sgl:
         print_stats(result_sgl)
         plot_results(result_sgl)
+        save_track_record(result_sgl)
+
+    # ── Double Calendar Portfolio for comparison ──
+    log.info("\n%s", "#" * 60)
+    log.info("# DOUBLE CALENDAR PORTFOLIO (all combos, top 20 by FF)")
+    log.info("%s", "#" * 60)
+    result_dbl = run_portfolio(df, mode="double")
+    if result_dbl:
+        print_stats(result_dbl)
+        plot_results(result_dbl)
 
     log.info("\n%s", "=" * 60)
     log.info("BACKTEST COMPLETE")

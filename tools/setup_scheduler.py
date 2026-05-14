@@ -16,7 +16,6 @@ Requires: Run as Administrator (schtasks needs elevation).
 
 import subprocess
 import sys
-import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -65,7 +64,6 @@ def create_tasks():
         name = task["name"]
         time = task["time"]
         args = task["args"]
-        desc = task["description"]
 
         # Build the command: python "path\to\autopilot.py" --flag
         program = f'"{PYTHON}"'
@@ -88,7 +86,7 @@ def create_tasks():
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
-            print(f"    OK")
+            print("    OK")
         else:
             print(f"    FAILED: {result.stderr.strip()}")
             if "Access is denied" in result.stderr:

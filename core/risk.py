@@ -10,7 +10,6 @@ Charts generated with matplotlib (dark theme matching the web app).
 import hashlib
 import pickle
 import numpy as np
-import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -427,8 +426,6 @@ def compute_risk(account_value=100_000):
     var = returns.var()
     kelly_f = min(0.5 * mu / var, 1.0) if var > 0 and mu > 0 else 0.04
     kelly_target = kelly_f * account_value
-    kelly_per_pos = kelly_target / 20  # MAX_POSITIONS
-
     # Compute all analytics
     mc = monte_carlo(returns, n_sims=10000, n_trades=100, initial=account_value,
                      kelly_f=kelly_f, n_positions=20)

@@ -275,7 +275,7 @@ if matched_moves:
     print(f"  Unmatched: {n_unmatched:,} trades (assumed -100%)")
     print(f"  Combined mean return: {combined_mean:.4f}")
     print(f"  Combined win rate: {combined_wr:.4f}")
-    print(f"  (PDF reference: mean~-0.10, wr~38-53%)")
+    print("  (PDF reference: mean~-0.10, wr~38-53%)")
 
     # Scenario 2: unmatched = -50%
     combined_mean_50 = (n_matched * mean_matched + n_unmatched * (-0.50)) / n_total

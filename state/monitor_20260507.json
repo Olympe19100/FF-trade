@@ -1,0 +1,98 @@
+{
+  "date": "2026-05-07",
+  "positions": [
+    {
+      "ticker": "HAL",
+      "combo": "14-70",
+      "contracts": 10,
+      "strike": 44.0,
+      "put_strike": 41.0,
+      "entry_cost": 2.83,
+      "current_cost": 1.87,
+      "unrealized_pnl": -986.0,
+      "return_pct": -0.3483,
+      "front_dte": 14,
+      "stock_px": 40.4
+    },
+    {
+      "ticker": "LRCX",
+      "combo": "14-41",
+      "contracts": 1,
+      "strike": 280.0,
+      "put_strike": 250.0,
+      "entry_cost": 14.18,
+      "current_cost": 14.1,
+      "unrealized_pnl": -10.6,
+      "return_pct": -0.0075,
+      "front_dte": 14,
+      "stock_px": 297.17
+    },
+    {
+      "ticker": "MO",
+      "combo": "15-71",
+      "contracts": 10,
+      "strike": 70.0,
+      "put_strike": 70.0,
+      "entry_cost": 2.92,
+      "current_cost": 2.98,
+      "unrealized_pnl": 39.0,
+      "return_pct": 0.0127,
+      "front_dte": 14,
+      "stock_px": 70.17
+    },
+    {
+      "ticker": "NOW",
+      "combo": "15-71",
+      "contracts": 10,
+      "strike": 95.0,
+      "put_strike": 85.0,
+      "entry_cost": 8.5,
+      "current_cost": 8.45,
+      "unrealized_pnl": -76.0,
+      "return_pct": -0.0088,
+      "front_dte": 14,
+      "stock_px": 89.05
+    },
+    {
+      "ticker": "PM",
+      "combo": "15-71",
+      "contracts": 10,
+      "strike": 175.0,
+      "put_strike": 170.0,
+      "entry_cost": 8.58,
+      "current_cost": 8.53,
+      "unrealized_pnl": -81.0,
+      "return_pct": -0.0093,
+      "front_dte": 14,
+      "stock_px": 170.53
+    },
+    {
+      "ticker": "PLTR",
+      "combo": "15-42",
+      "contracts": 10,
+      "strike": 140.0,
+      "put_strike": 130.0,
+      "entry_cost": 6.3,
+      "current_cost": 6.51,
+      "unrealized_pnl": 184.0,
+      "return_pct": 0.0285,
+      "front_dte": 14,
+      "stock_px": 133.79
+    },
+    {
+      "ticker": "MSFT",
+      "combo": "15-71",
+      "contracts": 6,
+      "strike": 430.0,
+      "put_strike": 410.0,
+      "entry_cost": 20.58,
+      "current_cost": 20.6,
+      "unrealized_pnl": -3.6,
+      "return_pct": -0.0003,
+      "front_dte": 14,
+      "stock_px": 413.96
+    }
+  ],
+  "errors": [],
+  "total_unrealized_pnl": -934.2
+}

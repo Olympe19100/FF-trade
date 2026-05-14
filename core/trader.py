@@ -18,14 +18,11 @@ Prerequisites:
 """
 
 import json
-import time
-import sys
 import asyncio
 import argparse
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Fix Python 3.14 asyncio event loop before importing ib_insync
 try:
@@ -33,30 +30,48 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-from ib_insync import IB, Stock, Option, Bag, ComboLeg, LimitOrder, MarketOrder, TagValue, util
+from ib_insync import IB, Stock, Option, MarketOrder
 
 from core.config import (
-    OUTPUT, STATE, PORTFOLIO_FILE, TRADES_FILE, BACKTEST_TRADES_FILE,
+    TRADES_FILE,
     DEFAULT_HOST, TWS_PAPER, GW_PAPER, CLIENT_ID,
-    MAX_POSITIONS, MAX_CONTRACTS, DEFAULT_ALLOC,
-    KELLY_FRAC, MIN_KELLY_TRADES, CONTRACT_MULT,
-    COMMISSION_LEG, SLIPPAGE_BUFFER, CLOSE_DAYS,
-    FILL_TIMEOUT, LMT_WALK_STEP, LMT_WALK_MAX, LMT_WALK_WAIT,
-    COMBO_TIMEOUT, COMBO_WALK_STEP, COMBO_WALK_WAIT,
-    LEG_WALK_STEP, LEG_WALK_WAIT, LEG_MAX_WALK, LEG_TIMEOUT,
+    MAX_POSITIONS, CONTRACT_MULT,
+    COMMISSION_LEG, CLOSE_DAYS,
     OPTIMAL_START_ET, OPTIMAL_END_ET, ENFORCE_WINDOW,
+    MIN_OI_LEG, MAX_BA_PCT,
+    CLOSE_PAUSE, SWEET_SPOT_START_ET, SWEET_SPOT_END_ET,
+    SWEET_SPOT_GATE, SWEET_SPOT_AGGRESSION_BOOST,
+    ENABLE_NETTING, OI_LEG_HARD_GATE,
+    FF_THRESHOLD_DEFAULT,
+    BA_WIDEN_ABORT, ENABLE_BA_CIRCUIT_BREAKER,
+    MAX_PARTICIPATION_RATE, ENABLE_PARTICIPATION_CAP,
+    INTER_SIGNAL_PAUSE,
     get_logger,
 )
 from core.portfolio import (
     load_latest_signals, load_portfolio, save_portfolio,
     add_position, record_trade,
     load_trade_history, compute_kelly, cost_per_contract, size_portfolio,
+    load_pending_signals, save_pending_signals, merge_signals_with_pending,
 )
 from core.execution import (
-    execute_spread, execute_spread_close,
+    execute_spread, execute_spread_close, get_leg_price,
 )
+from core.pricing import implied_vol_scalar, compute_ff
 
 log = get_logger(__name__)
+
+
+def _safe_int(val, default: int = 0) -> int:
+    """Convert a value to int, treating NaN/None/empty as *default*."""
+    if val is None:
+        return default
+    try:
+        if pd.notna(val) and val:
+            return int(float(val))
+    except (ValueError, TypeError):
+        pass
+    return default
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -249,8 +264,77 @@ def snap_to_valid(value: float, valid_set: set, max_diff: float | None = None) -
     return closest
 
 
+def recompute_ff_ibkr(ib: IB, legs: list, stock_px: float) -> tuple[float | None, float, float]:
+    """Recompute Forward Factor using IBKR live option quotes.
+
+    Queries IBKR for call leg bid/ask, computes IV from mid,
+    then computes FF = (front_iv - fwd_iv) / fwd_iv.
+
+    Returns (ff, front_iv, back_iv) or (None, 0, 0) if unavailable.
+    """
+    # Find front and back call legs
+    front_call = back_call = None
+    for option_contract, action in legs:
+        if option_contract.right == "C":
+            if action == "SELL":   # front month
+                front_call = option_contract
+            elif action == "BUY":  # back month
+                back_call = option_contract
+
+    if not front_call or not back_call:
+        return None, 0.0, 0.0
+
+    # Query IBKR for both call legs in parallel
+    ib.reqMktData(front_call, "", False, False)
+    ib.reqMktData(back_call, "", False, False)
+    ib.sleep(3)
+
+    front_tk = ib.ticker(front_call)
+    back_tk = ib.ticker(back_call)
+
+    front_mid = back_mid = 0.0
+    if front_tk:
+        fb = front_tk.bid
+        fa = front_tk.ask
+        if fb and fa and fb > 0 and fa > 0 and not np.isinf(fb) and not np.isinf(fa):
+            front_mid = (float(fb) + float(fa)) / 2
+    if back_tk:
+        bb = back_tk.bid
+        ba = back_tk.ask
+        if bb and ba and bb > 0 and ba > 0 and not np.isinf(bb) and not np.isinf(ba):
+            back_mid = (float(bb) + float(ba)) / 2
+
+    ib.cancelMktData(front_call)
+    ib.cancelMktData(back_call)
+
+    if front_mid <= 0 or back_mid <= 0:
+        return None, 0.0, 0.0
+
+    # Compute DTE
+    today = datetime.now()
+    front_exp_dt = datetime.strptime(front_call.lastTradeDateOrContractMonth, "%Y%m%d")
+    back_exp_dt = datetime.strptime(back_call.lastTradeDateOrContractMonth, "%Y%m%d")
+    front_dte = max(1, (front_exp_dt - today).days)
+    back_dte = max(1, (back_exp_dt - today).days)
+
+    strike = float(front_call.strike)
+
+    # Compute IV from mid prices
+    front_iv = implied_vol_scalar(front_mid, stock_px, strike, front_dte / 365.0, right="C")
+    back_iv = implied_vol_scalar(back_mid, stock_px, strike, back_dte / 365.0, right="C")
+
+    if np.isnan(front_iv) or np.isnan(back_iv):
+        return None, 0.0, 0.0
+
+    ff = compute_ff(front_iv, back_iv, front_dte, back_dte)
+    if np.isnan(ff):
+        return None, 0.0, 0.0
+
+    return ff, front_iv, back_iv
+
+
 def create_calendar_legs(ib: IB, ticker: str, strike: float, front_exp: str, back_exp: str,
-                         double: bool = True, put_strike: float | None = None) -> tuple[list, int, float | None, float | None]:
+                         double: bool = False, put_strike: float | None = None) -> tuple[list, int, float | None, float | None]:
     """Build individual option contracts for a calendar spread.
 
     Returns list of (Option, action) tuples ordered BUY-first (no naked short risk),
@@ -393,31 +477,262 @@ def check_optimal_window() -> tuple[bool, str]:
     return is_optimal, msg
 
 
+def check_sweet_spot() -> tuple[bool, str]:
+    """Check if we're in the sweet spot 10:30-11:30 ET (Muravyev & Pearson 2020).
+
+    Returns (in_sweet_spot: bool, message: str).
+    """
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        from backports.zoneinfo import ZoneInfo
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    current_time = now_et.strftime("%H:%M")
+
+    in_sweet = SWEET_SPOT_START_ET <= current_time <= SWEET_SPOT_END_ET
+    if in_sweet:
+        msg = f"In sweet spot {SWEET_SPOT_START_ET}-{SWEET_SPOT_END_ET} ET ({current_time} ET) — tightest spreads"
+    else:
+        msg = f"Outside sweet spot ({SWEET_SPOT_START_ET}-{SWEET_SPOT_END_ET} ET). Current: {current_time} ET"
+    return in_sweet, msg
+
+
+def _find_nettable_positions(to_close: list[dict], qualified: list) -> list[str]:
+    """Detect positions that could be netted (Man Group 2024).
+
+    Legacy V1: log-only — identifies tickers present in both close and enter lists.
+    Returns list of nettable tickers.
+    """
+    close_tickers = {pos["ticker"] for pos in to_close}
+    enter_tickers = {q[0]["ticker"] for q in qualified} if qualified else set()
+    return sorted(close_tickers & enter_tickers)
+
+
+def compute_netting(to_close: list[dict], qualified: list) -> list[dict]:
+    """Active Netting V2 — detect roll opportunities (Man Group 2024).
+
+    Input:
+        to_close: positions expiring soon
+        qualified: list of (sig, legs, n_legs, strike, put_strike, cps, spread_type)
+
+    Detects:
+        - same ticker + same back_exp + same strike → "roll_front" (only close/open front legs)
+        - otherwise → "none" (close and re-enter fully)
+
+    Returns list of NettingInstruction dicts:
+        {ticker, action, savings_estimate, close_pos, enter_sig}
+    """
+    close_by_ticker = {pos["ticker"]: pos for pos in to_close}
+    enter_by_ticker = {}
+    for q in qualified:
+        sig = q[0]
+        enter_by_ticker[sig["ticker"]] = q
+
+    instructions = []
+    overlap = sorted(set(close_by_ticker.keys()) & set(enter_by_ticker.keys()))
+
+    for ticker in overlap:
+        close_pos = close_by_ticker[ticker]
+        enter_q = enter_by_ticker[ticker]
+        enter_sig = enter_q[0]
+
+        # Check if back_exp and strike match → roll_front
+        same_back = close_pos.get("back_exp") == str(enter_sig.get("back_exp", ""))
+        same_strike = abs(close_pos.get("strike", 0) - float(enter_sig.get("strike", 0))) < 0.01
+
+        if same_back and same_strike:
+            # Roll front: only close/open front legs → save 2 legs × $0.65 × contracts
+            contracts = close_pos.get("contracts", 0)
+            savings = 2 * COMMISSION_LEG * contracts
+            instructions.append({
+                "ticker": ticker,
+                "action": "roll_front",
+                "savings_estimate": round(savings, 2),
+                "close_back_exp": close_pos.get("back_exp"),
+                "close_strike": close_pos.get("strike"),
+            })
+        else:
+            instructions.append({
+                "ticker": ticker,
+                "action": "none",
+                "savings_estimate": 0.0,
+                "close_back_exp": close_pos.get("back_exp"),
+                "close_strike": close_pos.get("strike"),
+            })
+
+    return instructions
+
+
 # Execution engine delegated to core.execution module
 # Backward-compat alias for api/routes_trading.py
 execute_spread_optimal = execute_spread
+
+
+def _distribute_across_combos(
+    ib, ticker, total_contracts, primary_sig, primary_legs, primary_n_legs,
+    primary_strike, primary_put_strike, primary_cps, primary_spread_type,
+    alternatives, exec_priority,
+    portfolio, active_tickers, slippage_log,
+    buying_power, total_deployed,
+):
+    """Distribute contracts across multiple combos for the same ticker when OI is tight.
+
+    Splits contracts proportionally to each combo's min leg OI, respecting the
+    10% OI gate per combo. Executes each chunk independently.
+
+    Returns dict with {entered, deployed} or None if distribution failed.
+    """
+    # Build list of all combos: primary + alternatives (FF >= threshold)
+    all_combos = [(primary_sig, primary_legs, primary_n_legs,
+                   primary_strike, primary_put_strike, primary_cps, primary_spread_type)]
+    for alt in alternatives:
+        alt_ff = float(alt[0].get("ff", 0) or 0)
+        if alt_ff >= FF_THRESHOLD_DEFAULT:
+            all_combos.append(alt)
+        else:
+            log.info("    %s: alt combo %s skipped (FF=%.1f%% < %.0f%%)",
+                     ticker, alt[0].get("combo", "?"), alt_ff * 100,
+                     FF_THRESHOLD_DEFAULT * 100)
+
+    # Compute OI capacity per combo (10% of min leg OI)
+    capacities = []
+    for (sig, legs, n_legs, strike, put_strike, cps, stype) in all_combos:
+        f_oi = _safe_int(sig.get("front_oi"))
+        b_oi = _safe_int(sig.get("back_oi"))
+        leg_ois = [oi for oi in (f_oi, b_oi) if oi > 0]
+        cap = max(1, int(min(leg_ois) * OI_LEG_HARD_GATE)) if leg_ois else 0
+        capacities.append(cap)
+
+    total_capacity = sum(capacities)
+    if total_capacity <= 0:
+        log.warning("    %s: No OI capacity across %d combos — SKIP", ticker, len(all_combos))
+        return None
+
+    # Distribute proportionally, capped at each combo's capacity
+    remaining = min(total_contracts, total_capacity)
+    allocations = [0] * len(all_combos)
+    for i in range(len(all_combos)):
+        if remaining <= 0:
+            break
+        alloc = min(capacities[i], remaining)
+        allocations[i] = alloc
+        remaining -= alloc
+
+    actual_total = sum(allocations)
+    if actual_total <= 0:
+        return None
+
+    log.info("    %s: OI DISTRIBUTION across %d combos: %s (total %d/%d)",
+             ticker, sum(1 for a in allocations if a > 0),
+             " + ".join(f"{combo_entry[0]['combo']}={alloc}"
+                        for combo_entry, alloc in zip(all_combos, allocations) if alloc > 0),
+             actual_total, total_contracts)
+
+    total_entered = 0
+    total_bp_used = 0.0
+
+    for i, ((sig, legs, n_legs, strike, put_strike, cps, stype), n) in enumerate(
+            zip(all_combos, allocations)):
+        if n <= 0:
+            continue
+
+        cpc = cost_per_contract(cps, n_legs)
+        chunk_deployed = n * cpc
+        if chunk_deployed > buying_power * 0.9:
+            log.warning("    %s %s: SKIP chunk ($%.0f > BP)", ticker, sig["combo"], chunk_deployed)
+            continue
+
+        min_oi = min(_safe_int(sig.get("front_oi")), _safe_int(sig.get("back_oi")))
+        log.info("    %s %s: %dx (OI chunk %d/%d)",
+                 ticker, sig["combo"], n, i + 1, len(all_combos))
+
+        result, fill_cost, slippage, details = execute_spread(
+            ib, ticker, legs, n_legs, n, cps, stype,
+            min_leg_oi=min_oi,
+            priority=exec_priority,
+        )
+
+        slippage_log.append({
+            "ticker": ticker, "eodhd_mid": cps,
+            "fill_cost": fill_cost, "slippage": slippage,
+            "method": details.get("method"), "result": result,
+        })
+
+        if result == "full":
+            pos = add_position(
+                portfolio, ticker, sig["combo"], strike,
+                sig["front_exp"], sig["back_exp"],
+                n, fill_cost, stype, sig["ff"], n_legs,
+                put_strike=put_strike, min_leg_oi=min_oi,
+            )
+            pos["execution_method"] = details.get("method")
+            pos["slippage"] = round(slippage, 4)
+            active_tickers.add(ticker)
+            total_entered += 1
+            total_bp_used += chunk_deployed
+            buying_power -= chunk_deployed
+
+            try:
+                from core.tca import ExecutionRecord, record_execution
+                record_execution(ExecutionRecord(
+                    ticker=ticker, direction="entry", scanner_mid=cps,
+                    theta_bid=details.get("theta_bid", 0.0),
+                    theta_ask=details.get("theta_ask", 0.0),
+                    theta_mid=details.get("theta_mid", 0.0),
+                    method=details.get("method", ""),
+                    combo_attempted=details.get("combo_attempted", False),
+                    combo_result=details.get("combo_result"),
+                    walk_steps=details.get("walk_steps", 0),
+                    initial_limit=details.get("initial_limit", 0.0),
+                    final_limit=details.get("final_limit", 0.0),
+                    exec_seconds=details.get("exec_seconds", 0.0),
+                    priority=details.get("priority", exec_priority),
+                    fill_price=fill_cost, contracts=n, slippage=slippage,
+                    min_leg_oi=min_oi, spread_type=stype, n_legs=n_legs,
+                ))
+            except Exception:
+                pass
+
+    if total_entered > 0:
+        return {"entered": total_entered, "deployed": total_bp_used}
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════
 #  ENTER NEW POSITIONS (--enter)
 # ═══════════════════════════════════════════════════════════════
 
-def enter_new_positions(ib: IB, acct: str, max_new: int | None = None) -> dict | None:
+def enter_new_positions(ib: IB, acct: str, max_new: int | None = None,
+                        retry_signals: list | None = None) -> dict | None:
     """Place new calendar spread orders from scanner signals.
 
     Two-pass approach:
       Pass 1: Qualify contracts on IBKR (identify valid positions)
       Pass 2: Size all positions globally via Kelly to hit target allocation
       Pass 3: Place orders
+
+    If retry_signals is provided, uses those pre-filtered signals instead
+    of loading fresh signals (intra-day retry mode).
     """
     log.info("=" * 60)
     log.info("ENTERING NEW POSITIONS")
     log.info("=" * 60)
 
-    # Load signals
-    signals = load_latest_signals()
-    if signals.empty:
-        return
+    # Load signals: either from retry list or fresh + pending
+    if retry_signals is not None:
+        log.info("  INTRA-DAY RETRY: %d pre-filtered signals", len(retry_signals))
+        signals = pd.DataFrame(retry_signals)
+        pending = []
+        if signals.empty:
+            return
+    else:
+        fresh_signals = load_latest_signals()
+        pending = load_pending_signals()
+        signals = merge_signals_with_pending(fresh_signals, pending)
+        if signals.empty:
+            return
+
+    pending_drop_tickers = set()   # tickers whose FF decayed → remove from pending
 
     # Current portfolio
     portfolio = load_portfolio()
@@ -453,48 +768,103 @@ def enter_new_positions(ib: IB, acct: str, max_new: int | None = None) -> dict |
     log.info(f"  Kelly target:  ${kelly_target:,.0f} (f * W)")
 
     # ── PASS 1: Qualify all contracts (individual legs) ──
+    # Allow multiple combos per ticker for OI distribution across expirations
     log.info("  --- PASS 1: Qualifying contracts on IBKR ---")
     qualified = []  # (sig, legs, n_legs, actual_strike, actual_put_strike, cost_per_share, spread_type)
+    qualified_tickers = set()   # tickers with at least one qualified combo
+    alt_combos = {}             # ticker -> list of alternative qualified combos
     skipped = 0
 
     for _, sig in signals.iterrows():
-        if len(qualified) >= slots:
-            break
-
         ticker = sig["ticker"]
         if ticker in active_tickers:
             continue
 
-        has_double = pd.notna(sig.get("dbl_cost")) and sig["dbl_cost"] > 0
-        spread_type = "double" if has_double else "single"
-        cps = sig["dbl_cost"] if has_double else sig["call_cost"]
+        # Primary combo: first seen per ticker fills a slot
+        # Alt combos: subsequent combos for same ticker stored for OI distribution
+        if ticker in qualified_tickers:
+            # Already have primary — store as alternative (no slot cost)
+            if ticker not in alt_combos:
+                alt_combos[ticker] = []
+            # Still need to qualify on IBKR though
+        elif len(qualified) >= slots:
+            break
 
-        # Read put_strike from signal (separate from call strike for 35-delta)
-        sig_put_strike = sig.get("put_strike")
-        if pd.isna(sig_put_strike):
-            sig_put_strike = None
+        spread_type = "single"
+        cps = sig["call_cost"]
 
-        ps_str = " PutK=%.0f" % sig_put_strike if sig_put_strike else ""
-        log.info("    %s %s CallK=%.0f%s FF=%.1f%% $%.2f (%s) ...",
-                 ticker, sig['combo'], sig['strike'], ps_str,
-                 sig['ff'], cps, spread_type)
+        # ── Liquidity filters ──
+        front_oi = _safe_int(sig.get("front_oi"))
+        back_oi = _safe_int(sig.get("back_oi"))
+        min_leg_oi = min(front_oi, back_oi) if (front_oi > 0 and back_oi > 0) else max(front_oi, back_oi)
+        ba_pct = float(sig.get("ba_pct", 0) or 0)
+
+        # Filter MIN_OI_LEG: skip if OI is known but below threshold
+        if min_leg_oi > 0 and min_leg_oi < MIN_OI_LEG:
+            log.info("    %s: SKIP — min_leg_oi=%d < %d",
+                     ticker, min_leg_oi, MIN_OI_LEG)
+            skipped += 1
+            continue
+
+        # Filter MAX_BA_PCT: skip if bid-ask spread too wide
+        if ba_pct > MAX_BA_PCT:
+            log.info("    %s: SKIP — ba_pct=%.1f%% > %.0f%%",
+                     ticker, ba_pct * 100, MAX_BA_PCT * 100)
+            skipped += 1
+            continue
+
+        scanner_ff = float(sig.get("ff", 0) or 0)
+        log.info("    %s %s K=%.0f scanFF=%.1f%% $%.2f (%s) OI=%d/%d BA=%.1f%% ...",
+                 ticker, sig['combo'], sig['strike'],
+                 scanner_ff * 100, cps, spread_type, front_oi, back_oi, ba_pct * 100)
 
         legs, n_legs, actual_strike, actual_put_strike = create_calendar_legs(
             ib, ticker, sig["strike"],
             sig["front_exp"], sig["back_exp"],
-            double=has_double,
-            put_strike=sig_put_strike
         )
         if not legs:
-            log.info("    -> SKIP")
+            log.info("    -> SKIP (no legs)")
             skipped += 1
             continue
 
-        log.info("    -> OK")
-        qualified.append((sig, legs, n_legs, actual_strike, actual_put_strike, cps, spread_type))
+        # ── Recompute FF with IBKR live IV data ──
+        stock_px = float(sig.get("stock_px", 0) or 0)
+        ibkr_ff, front_iv, back_iv = recompute_ff_ibkr(ib, legs, stock_px)
 
-    log.info("  Qualified: %d/%d (%d skipped)",
-             len(qualified), len(qualified) + skipped, skipped)
+        if ibkr_ff is not None:
+            sig_ff = ibkr_ff
+            log.info("    %s: IBKR FF=%.1f%% (front_iv=%.1f%% back_iv=%.1f%%)",
+                     ticker, ibkr_ff * 100, front_iv * 100, back_iv * 100)
+        else:
+            sig_ff = scanner_ff
+            log.info("    %s: IBKR IV unavailable, using scanner FF=%.1f%%",
+                     ticker, scanner_ff * 100)
+
+        # Store live FF in signal for downstream use
+        sig = sig.copy()
+        sig["ff"] = sig_ff
+
+        if sig_ff < FF_THRESHOLD_DEFAULT:
+            log.info("    %s: SKIP — FF=%.1f%% < %.0f%% threshold",
+                     ticker, sig_ff * 100, FF_THRESHOLD_DEFAULT * 100)
+            skipped += 1
+            # If this was a pending signal, mark for removal (FF decayed)
+            if sig.get("_pending"):
+                pending_drop_tickers.add(ticker)
+            continue
+
+        log.info("    -> OK")
+        entry = (sig, legs, n_legs, actual_strike, actual_put_strike, cps, spread_type)
+        if ticker not in qualified_tickers:
+            qualified.append(entry)
+            qualified_tickers.add(ticker)
+        else:
+            alt_combos.setdefault(ticker, []).append(entry)
+
+    n_alts = sum(len(v) for v in alt_combos.values())
+    log.info("  Qualified: %d/%d (%d skipped, %d alt combos for %d tickers)",
+             len(qualified), len(qualified) + skipped, skipped,
+             n_alts, len(alt_combos))
 
     if not qualified:
         return
@@ -502,7 +872,17 @@ def enter_new_positions(ib: IB, acct: str, max_new: int | None = None) -> dict |
     # ── PASS 2: Global Kelly sizing ──
     log.info("  --- PASS 2: Kelly sizing (%d positions) ---", len(qualified))
     # qualified tuple: (sig, legs, n_legs, actual_strike, actual_put_strike, cps, spread_type)
-    signals_info = [(q[0]["ticker"], q[5], q[2]) for q in qualified]
+    # signals_info: (ticker, cps, n_legs, ff, ba_pct, min_leg_oi)
+    def _min_leg_oi(sig):
+        f_oi = _safe_int(sig.get("front_oi"))
+        b_oi = _safe_int(sig.get("back_oi"))
+        if f_oi > 0 and b_oi > 0:
+            return min(f_oi, b_oi)
+        return max(f_oi, b_oi)
+
+    signals_info = [(q[0]["ticker"], q[5], q[2], float(q[0]["ff"]),
+                     float(q[0].get("ba_pct", 0)), _min_leg_oi(q[0]))
+                    for q in qualified]
     sizing = size_portfolio(signals_info, kelly_f, account_value)
 
     total_deployed = sum(d for _, _, d in sizing)
@@ -526,29 +906,149 @@ def enter_new_positions(ib: IB, acct: str, max_new: int | None = None) -> dict |
                     OPTIMAL_START_ET, OPTIMAL_END_ET)
         return
 
-    # ── PASS 3: Optimal execution (combo-first, legs-fallback) ──
+    # ── PASS 3: Optimal execution (BAG-only, no legs fallback) ──
     log.info("  --- PASS 3: Optimal execution (%d spreads) ---", len(qualified))
-    log.info("  Strategy: Adaptive combo (%ds) -> Adaptive Urgent legs (%ds/leg)",
-             COMBO_TIMEOUT, LEG_TIMEOUT)
+    log.info("  Strategy: BAG-only combo (no legs fallback)")
+
+    # Sweet spot check (Muravyev & Pearson 2020)
+    in_sweet, sweet_msg = check_sweet_spot()
+    log.info("  %s", sweet_msg)
+
+    # ── Sweet Spot Gate (Muravyev & Pearson 2020) ──
+    if SWEET_SPOT_GATE and not in_sweet:
+        log.warning("  SWEET SPOT GATE: deferring execution until %s-%s ET",
+                    SWEET_SPOT_START_ET, SWEET_SPOT_END_ET)
+        return
+
+    # Adaptive algo priority: patient in sweet spot, urgent outside
+    exec_priority = "Normal" if in_sweet else "Urgent"
+    if SWEET_SPOT_AGGRESSION_BOOST and not in_sweet:
+        log.info("  Priority: %s (outside sweet spot)", exec_priority)
+
+    # Active Netting V2 (Man Group 2024)
+    today = datetime.now()
+    expiring_positions = [
+        p for p in active
+        if p.get("front_exp")
+        and (datetime.strptime(p["front_exp"], "%Y-%m-%d") - today).days <= CLOSE_DAYS
+    ]
+    netting_instructions = []
+    if expiring_positions and qualified and ENABLE_NETTING:
+        netting_instructions = compute_netting(expiring_positions, qualified)
+        rollable = [ni for ni in netting_instructions if ni["action"] == "roll_front"]
+        if rollable:
+            tickers = [ni["ticker"] for ni in rollable]
+            total_savings = sum(ni["savings_estimate"] for ni in rollable)
+            log.info("  ACTIVE NETTING: %d ticker(s) will be rolled: %s (est. savings $%.2f)",
+                     len(rollable), ", ".join(tickers), total_savings)
+    elif expiring_positions and qualified:
+        # Legacy netting log
+        nettable = _find_nettable_positions(expiring_positions, qualified)
+        if nettable:
+            log.info("  NETTING: %d ticker(s) in both close & enter: %s",
+                     len(nettable), ", ".join(nettable))
+
+    # Sort by most liquid first (fill easy names before IBKR event loop saturates)
+    exec_order = list(zip(qualified, sizing))
+    exec_order.sort(key=lambda x: _min_leg_oi(x[0][0]), reverse=True)
+    log.info("  Execution order (most liquid first): %s",
+             ", ".join(f"{x[0][0]['ticker']}(OI={_min_leg_oi(x[0][0])})"
+                       for x in exec_order))
+
     entered = 0
     partial = 0
     not_filled = 0
+    skipped_exec = 0
     slippage_log = []
+    filled_tickers = set()
+    unfilled_signals = []          # signals that failed to fill → pending
 
     for (sig, legs, n_legs, actual_strike, actual_put_strike, cps, spread_type), \
-        (ticker, contracts, deployed) in zip(qualified, sizing):
+        (ticker, contracts, deployed) in exec_order:
         if contracts <= 0:
             continue
 
         if deployed > buying_power * 0.9:
-            log.warning("    %s: SKIP ($%,.0f > buying power)", ticker, deployed)
+            log.warning("    %s: SKIP ($%.0f > buying power $%.0f)", ticker, deployed, buying_power)
             continue
 
-        log.info("    %s: %dx %s (%d legs, EODHD mid=$%.2f)",
-                 ticker, contracts, spread_type, n_legs, cps)
+        pos_min_leg_oi = _min_leg_oi(sig)
+
+        # ── Spread circuit breaker: abort if live BA widened (Hasbrouck 2007) ──
+        if ENABLE_BA_CIRCUIT_BREAKER:
+            try:
+                worst_live_ba = 0.0
+                for leg_contract, _ in legs[:2]:  # back + front call legs
+                    _cb_bid, _cb_ask, _cb_mid = get_leg_price(ib, leg_contract)
+                    if _cb_bid > 0 and _cb_ask > _cb_bid:
+                        leg_ba = _cb_ask - _cb_bid
+                        worst_live_ba = max(worst_live_ba, leg_ba)
+                signal_ba_pct = float(sig.get("ba_pct", 0) or 0)
+                signal_ba = abs(cps) * signal_ba_pct if signal_ba_pct > 0 else 0
+                if signal_ba > 0 and worst_live_ba > signal_ba * BA_WIDEN_ABORT:
+                    log.warning("    %s: CIRCUIT BREAKER — worst leg BA $%.2f > %.0fx signal BA $%.2f, SKIP",
+                                ticker, worst_live_ba, BA_WIDEN_ABORT, signal_ba)
+                    skipped_exec += 1
+                    continue
+            except Exception as ex:
+                log.warning("    %s: Circuit breaker price check failed: %s — proceeding cautiously", ticker, ex)
+
+        # ── Participation rate cap: refuse if > 5% of daily volume (Almgren et al. 2005) ──
+        if ENABLE_PARTICIPATION_CAP:
+            try:
+                from core.portfolio import _get_daily_volume
+                daily_vol = _get_daily_volume(ticker)
+                if daily_vol > 0:
+                    participation = contracts / daily_vol
+                    if participation > MAX_PARTICIPATION_RATE:
+                        capped = max(1, int(daily_vol * MAX_PARTICIPATION_RATE))
+                        log.warning("    %s: PARTICIPATION CAP — %d contracts = %.1f%% of daily vol %d (cap → %d)",
+                                    ticker, contracts, participation * 100, daily_vol, capped)
+                        contracts = capped
+                        deployed = contracts * cost_per_contract(cps, n_legs)
+            except Exception:
+                pass
+
+        # ── Per-leg OI hard gate: refuse if contracts > 10% of ANY leg's OI ──
+        front_oi = _safe_int(sig.get("front_oi"))
+        back_oi = _safe_int(sig.get("back_oi"))
+        leg_ois = [oi for oi in (front_oi, back_oi) if oi > 0]
+        if leg_ois:
+            min_oi = min(leg_ois)
+            oi_cap = max(1, int(min_oi * OI_LEG_HARD_GATE))
+            if contracts > oi_cap:
+                log.warning("    %s: OI GATE — %d contracts > %d%% of min leg OI %d (cap=%d)",
+                            ticker, contracts, int(OI_LEG_HARD_GATE * 100), min_oi, oi_cap)
+                # Try to distribute across alternative combos
+                if ticker in alt_combos and alt_combos[ticker]:
+                    distributed = _distribute_across_combos(
+                        ib, ticker, contracts, sig, legs, n_legs,
+                        actual_strike, actual_put_strike, cps, spread_type,
+                        alt_combos[ticker], exec_priority,
+                        portfolio, active_tickers, slippage_log,
+                        buying_power, deployed,
+                    )
+                    if distributed:
+                        entered += distributed["entered"]
+                        buying_power -= distributed["deployed"]
+                        continue
+                # No alternatives or distribution failed — cap at OI limit
+                if oi_cap <= 0:
+                    log.warning("    %s: SKIP — OI too low for any contracts", ticker)
+                    skipped_exec += 1
+                    continue
+                old_n = contracts
+                contracts = oi_cap
+                deployed = contracts * cost_per_contract(cps, n_legs)
+                log.info("    %s: Reduced %d → %d contracts (OI gate)", ticker, old_n, contracts)
+
+        log.info("    %s: %dx %s (%d legs, mid=$%.2f, OI=%d/%d)",
+                 ticker, contracts, spread_type, n_legs, cps, front_oi, back_oi)
 
         result, fill_cost, slippage, details = execute_spread(
-            ib, ticker, legs, n_legs, contracts, cps, spread_type
+            ib, ticker, legs, n_legs, contracts, cps, spread_type,
+            min_leg_oi=pos_min_leg_oi,
+            priority=exec_priority
         )
 
         slippage_log.append({
@@ -565,19 +1065,104 @@ def enter_new_positions(ib: IB, acct: str, max_new: int | None = None) -> dict |
                 portfolio, ticker, sig["combo"], actual_strike,
                 sig["front_exp"], sig["back_exp"],
                 contracts, fill_cost, spread_type, sig["ff"], n_legs,
-                put_strike=actual_put_strike
+                put_strike=actual_put_strike,
+                min_leg_oi=pos_min_leg_oi
             )
             pos["execution_method"] = details.get("method")
             pos["slippage"] = round(slippage, 4)
             active_tickers.add(ticker)
+            filled_tickers.add(ticker)
             entered += 1
             buying_power -= deployed
+
+            # ── TCA Recording (Kissell & Glantz 2003) ──
+            try:
+                from core.tca import ExecutionRecord, record_execution
+                record_execution(ExecutionRecord(
+                    ticker=ticker,
+                    direction="entry",
+                    scanner_mid=cps,
+                    theta_bid=details.get("theta_bid", 0.0),
+                    theta_ask=details.get("theta_ask", 0.0),
+                    theta_mid=details.get("theta_mid", 0.0),
+                    method=details.get("method", ""),
+                    combo_attempted=details.get("combo_attempted", False),
+                    combo_result=details.get("combo_result"),
+                    walk_steps=details.get("walk_steps", 0),
+                    initial_limit=details.get("initial_limit", 0.0),
+                    final_limit=details.get("final_limit", 0.0),
+                    exec_seconds=details.get("exec_seconds", 0.0),
+                    priority=details.get("priority", exec_priority),
+                    fill_price=fill_cost,
+                    contracts=contracts,
+                    slippage=slippage,
+                    min_leg_oi=pos_min_leg_oi,
+                    option_ba=float(sig.get("ba_pct", 0) or 0),
+                    spread_type=spread_type,
+                    n_legs=n_legs,
+                ))
+            except Exception as ex:
+                log.debug("TCA recording failed: %s", ex)
         elif result == "partial":
             partial += 1
+            # Register partially filled position (some slices succeeded)
+            filled_cts = details.get("filled_contracts", 0)
+            if filled_cts > 0:
+                partial_deployed = filled_cts * cost_per_contract(cps, n_legs)
+                pos = add_position(
+                    portfolio, ticker, sig["combo"], actual_strike,
+                    sig["front_exp"], sig["back_exp"],
+                    filled_cts, fill_cost, spread_type, sig["ff"], n_legs,
+                    put_strike=actual_put_strike,
+                    min_leg_oi=pos_min_leg_oi
+                )
+                pos["execution_method"] = details.get("method")
+                pos["slippage"] = round(slippage, 4)
+                pos["partial"] = True
+                active_tickers.add(ticker)
+                filled_tickers.add(ticker)
+                buying_power -= partial_deployed
+                log.info("    %s: Partial fill registered (%d/%d contracts)",
+                         ticker, filled_cts, contracts)
         else:
             not_filled += 1
+            # Add to pending for retry next day
+            raw_rc = sig.get("retry_count", 0)
+            retry_count = int(raw_rc if pd.notna(raw_rc) else 0) + 1
+            raw_ps = sig.get("pending_since", None)
+            pending_since = str(raw_ps) if pd.notna(raw_ps) and raw_ps else datetime.now().strftime("%Y-%m-%d")
+            unfilled_signals.append({
+                "ticker": ticker,
+                "combo": str(sig.get("combo", "")),
+                "strike": float(sig.get("strike", 0)),
+                "front_exp": str(sig.get("front_exp", "")),
+                "back_exp": str(sig.get("back_exp", "")),
+                "ff": float(sig.get("ff", 0)),
+                "call_cost": float(sig.get("call_cost", cps)),
+                "front_oi": _safe_int(sig.get("front_oi")),
+                "back_oi": _safe_int(sig.get("back_oi")),
+                "ba_pct": float(sig.get("ba_pct", 0) or 0) if pd.notna(sig.get("ba_pct", 0)) else 0.0,
+                "pending_since": pending_since,
+                "retry_count": retry_count,
+            })
+            log.info("    %s: Added to pending (retry #%d)", ticker, retry_count)
+
+        # Pause between signal executions (let IBKR event loop settle)
+        if INTER_SIGNAL_PAUSE > 0:
+            ib.sleep(INTER_SIGNAL_PAUSE)
 
     save_portfolio(portfolio)
+
+    # ── Save pending signals ──
+    # Keep: existing pending that weren't filled and weren't dropped
+    # Add: newly unfilled signals
+    remaining_pending = [
+        s for s in pending
+        if s.get("ticker") not in filled_tickers
+        and s.get("ticker") not in pending_drop_tickers
+    ]
+    all_pending = remaining_pending + unfilled_signals
+    save_pending_signals(all_pending)
 
     # ── Slippage Report ──
     if slippage_log:
@@ -602,8 +1187,8 @@ def enter_new_positions(ib: IB, acct: str, max_new: int | None = None) -> dict |
     log.info("  %s", "=" * 40)
     log.info("  SUMMARY")
     log.info("  Kelly f:       %.4f (%.1f%%)", kelly_f, kelly_f * 100)
-    log.info("  Kelly target:  $%,.0f", kelly_target)
-    log.info("  Total sized:   $%,.0f", total_deployed)
+    log.info(f"  Kelly target:  ${kelly_target:,.0f}")
+    log.info(f"  Total sized:   ${total_deployed:,.0f}")
     log.info("  Full fills:    %d/%d", entered, len(qualified))
     log.info("  Partial fills: %d", partial)
     log.info("  Not filled:    %d", not_filled)
@@ -636,6 +1221,8 @@ def close_expiring_positions(ib: IB, acct: str) -> None:
 
     to_close = []
     for pos in active:
+        if not pos.get("front_exp"):
+            continue
         front_exp = pd.Timestamp(pos["front_exp"])
         days_left = (front_exp - pd.Timestamp(today)).days
         if days_left <= CLOSE_DAYS:
@@ -644,6 +1231,9 @@ def close_expiring_positions(ib: IB, acct: str) -> None:
     if not to_close:
         log.info("  No positions to close (next expiry not within %d days)", CLOSE_DAYS)
         for pos in active:
+            if not pos.get("front_exp"):
+                log.info("    %s: SKIP — no front_exp", pos['ticker'])
+                continue
             front_exp = pd.Timestamp(pos["front_exp"])
             days_left = (front_exp - pd.Timestamp(today)).days
             log.info("    %s %s: front exp %s (%dd)",
@@ -651,6 +1241,11 @@ def close_expiring_positions(ib: IB, acct: str) -> None:
         return
 
     log.info("  Positions to close: %d", len(to_close))
+
+    # Sort by least liquid first (Le Coz et al. 2024)
+    to_close.sort(key=lambda p: p.get("min_leg_oi", 0))
+    log.info("  Close order (least liquid first): %s",
+             ", ".join(f"{p['ticker']}(OI={p.get('min_leg_oi', 0)})" for p in to_close))
 
     # ── Time-of-day check for closing ──
     is_optimal, time_msg = check_optimal_window()
@@ -660,21 +1255,21 @@ def close_expiring_positions(ib: IB, acct: str) -> None:
                     OPTIMAL_START_ET, OPTIMAL_END_ET)
         return
 
-    for pos in to_close:
+    for i, pos in enumerate(to_close):
         ticker = pos["ticker"]
         contracts = pos["contracts"]
-        pos_put_strike = pos.get("put_strike", pos["strike"])
-        log.info("  Closing %s %s CallK=%.0f PutK=%.0f x%d (%s)",
-                 ticker, pos['combo'], pos['strike'],
-                 pos_put_strike, contracts, pos['spread_type'])
-
-        # Rebuild individual leg contracts (separate call/put strikes)
         is_double = pos["spread_type"] == "double"
+        pos_put_strike = pos.get("put_strike", pos["strike"]) if is_double else None
+        log.info("  Closing %s %s K=%.0f x%d (%s)",
+                 ticker, pos['combo'], pos['strike'],
+                 contracts, pos['spread_type'])
+
+        # Rebuild individual leg contracts (double=True only for legacy double positions)
         legs, n_legs, _, _ = create_calendar_legs(
             ib, ticker, pos["strike"],
             pos["front_exp"], pos["back_exp"],
             double=is_double,
-            put_strike=pos_put_strike
+            put_strike=pos_put_strike,
         )
         if not legs:
             log.error("    Could not rebuild contract, manual close needed")
@@ -699,10 +1294,34 @@ def close_expiring_positions(ib: IB, acct: str) -> None:
             pos["exit_date"] = today.strftime("%Y-%m-%d")
             pos["exit_price"] = exit_price
             pos["pnl"] = round(pnl, 2)
+            pos["close_method"] = method
             record_trade(pos, exit_price, pnl, ret_pct)
+
+            # ── TCA Recording for close (Kissell & Glantz 2003) ──
+            try:
+                from core.tca import ExecutionRecord, record_execution
+                record_execution(ExecutionRecord(
+                    ticker=ticker,
+                    direction="close",
+                    scanner_mid=pos.get("cost_per_share", 0.0),
+                    method=method,
+                    fill_price=exit_price,
+                    contracts=contracts,
+                    slippage=exit_price - pos.get("cost_per_share", 0.0),
+                    min_leg_oi=pos.get("min_leg_oi", 0),
+                    spread_type=pos.get("spread_type", ""),
+                    n_legs=n_legs,
+                ))
+            except Exception as ex:
+                log.debug("TCA recording (close) failed: %s", ex)
         else:
             log.warning("    PARTIAL CLOSE: %d/%d legs.", len(filled_legs), n_legs)
             log.warning("    Manual cleanup needed for remaining legs.")
+
+        # Stagger closes (Moallemi & Park 2018)
+        if i < len(to_close) - 1:
+            log.info("    Pausing %ds between close executions", CLOSE_PAUSE)
+            ib.sleep(CLOSE_PAUSE)
 
     save_portfolio(portfolio)
 
@@ -722,7 +1341,6 @@ def close_position_ibkr(ib: IB, pos: dict) -> dict:
     """
     ticker = pos["ticker"]
     contracts = pos["contracts"]
-    n_legs_expected = pos.get("n_legs", 4)
 
     # 0-contract positions can't be closed on IBKR
     if contracts == 0:
@@ -732,19 +1350,19 @@ def close_position_ibkr(ib: IB, pos: dict) -> dict:
             "method": "skip",
         }
 
-    pos_put_strike = pos.get("put_strike", pos["strike"])
     is_double = pos["spread_type"] == "double"
+    pos_put_strike = pos.get("put_strike", pos["strike"]) if is_double else None
 
-    log.info("  IBKR CLOSE: %s %s CallK=%.0f PutK=%.0f x%d (%s)",
+    log.info("  IBKR CLOSE: %s %s K=%.0f x%d (%s)",
              ticker, pos['combo'], pos['strike'],
-             pos_put_strike, contracts, pos['spread_type'])
+             contracts, pos['spread_type'])
 
-    # Rebuild individual leg contracts (separate call/put strikes)
+    # Rebuild individual leg contracts (double=True only for legacy double positions)
     legs, n_legs, _, _ = create_calendar_legs(
         ib, ticker, pos["strike"],
         pos["front_exp"], pos["back_exp"],
         double=is_double,
-        put_strike=pos_put_strike
+        put_strike=pos_put_strike,
     )
     if not legs:
         return {
@@ -804,10 +1422,10 @@ def show_basic_status(ib: IB, acct: str) -> None:
     info = get_account_info(ib, acct)
     ccy = info.get("base_currency", "USD")
     log.info("  Account:         %s (%s)", acct, ccy)
-    log.info("  Net Liquidation: %12,.2f %s", info.get('NetLiquidation', 0), ccy)
-    log.info("  Buying Power:    %12,.2f %s", info.get('BuyingPower', 0), ccy)
-    log.info("  Cash:            %12,.2f %s", info.get('TotalCashValue', 0), ccy)
-    log.info("  Gross Position:  %12,.2f %s", info.get('GrossPositionValue', 0), ccy)
+    log.info(f"  Net Liquidation: {info.get('NetLiquidation', 0):>12,.2f} {ccy}")
+    log.info(f"  Buying Power:    {info.get('BuyingPower', 0):>12,.2f} {ccy}")
+    log.info(f"  Cash:            {info.get('TotalCashValue', 0):>12,.2f} {ccy}")
+    log.info(f"  Gross Position:  {info.get('GrossPositionValue', 0):>12,.2f} {ccy}")
 
     portfolio = load_portfolio()
     active = [p for p in portfolio["positions"] if "exit_date" not in p]
@@ -818,18 +1436,17 @@ def show_basic_status(ib: IB, acct: str) -> None:
     if active:
         total_deployed = sum(p["total_deployed"] for p in active)
         avg_ff = np.mean([p["ff"] for p in active])
-        log.info("  Total deployed:   $%12,.2f", total_deployed)
+        log.info(f"  Total deployed:   ${total_deployed:>12,.2f}")
         log.info("  Avg FF:           %11.1f%%", avg_ff)
 
-        log.info("  %6s  %5s  %6s  %6s  %6s  %3s  %7s  %9s  %5s  %10s  %10s",
-                 "Ticker", "Combo", "CallK", "PutK", "Type",
+        log.info("  %6s  %5s  %6s  %6s  %3s  %7s  %9s  %5s  %10s  %10s",
+                 "Ticker", "Combo", "Strike", "Type",
                  "Ctr", "Cost", "Deployed", "FF", "FrontExp", "Entry")
-        log.info("  %s", "-" * 95)
+        log.info("  %s", "-" * 85)
 
         for p in sorted(active, key=lambda x: -x["ff"]):
-            ps = p.get("put_strike", p["strike"])
-            log.info("  %6s  %5s  $%5.0f  $%5.0f  %6s  %3d  $%6.2f  $%8.2f  %4.1f%%  %10s  %10s",
-                     p['ticker'], p['combo'], p['strike'], ps,
+            log.info("  %6s  %5s  $%5.0f  %6s  %3d  $%6.2f  $%8.2f  %4.1f%%  %10s  %10s",
+                     p['ticker'], p['combo'], p['strike'],
                      p['spread_type'], p['contracts'], p['cost_per_share'],
                      p['total_deployed'], p['ff'], p['front_exp'], p['entry_date'])
 

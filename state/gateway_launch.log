@@ -1,0 +1,99 @@
+WARNING: package sun.lwawt not in java.desktop
+IBC Settings:
+    AcceptIncomingConnectionAction=accept
+    AcceptNonBrokerageAccountWarning=yes
+    AllowBlindTrading=yes
+    DismissNSEComplianceNotice=yes
+    DismissPasswordExpiryWarning=no
+    ExistingSessionDetectedAction=primary
+    FIX=no
+    IbLoginId=***
+    IbPassword=***
+    LogToConsole=yes
+    MinimizeMainWindow=no
+    OverrideTwsApiPort=4002
+    ReadOnlyLogin=no
+    ShowAllTrades=no
+    StoreSettingsOnServer=no
+    TradingMode=paper
+End IBC Settings
+
+2026-05-14 19:51:44:090 IBC: version: 3.23.0
+System Properties
+------------------------------------------------------------
+java.specification.version = 17
+sun.cpu.isalist = amd64
+sun.jnu.encoding = Cp1252
+java.class.path = C:\Users\ANTEC MSI\Desktop\pro\Option trading\tools\ibc\IBC.jar;C:\Jts\ibgateway\1037\jars\batik-all-1.16.jar;C:\Jts\ibgateway\1037\jars\commons-io-2.11.0.jar;C:\Jts\ibgateway\1037\jars\core-3.5.3.jar;C:\Jts\ibgateway\1037\jars\fop-2.8.jar;C:\Jts\ibgateway\1037\jars\jackson-annotations-2.12.3.jar;C:\Jts\ibgateway\1037\jars\jackson-core-2.12.3.jar;C:\Jts\ibgateway\1037\jars\jackson-databind-2.12.3.jar;C:\Jts\ibgateway\1037\jars\jts4launch-1037.jar;C:\Jts\ibgateway\1037\jars\jxbrowser-7.41.3.jar;C:\Jts\ibgateway\1037\jars\jxbrowser-swing-7.41.3.jar;C:\Jts\ibgateway\1037\jars\jxbrowser-win64-7.41.3.jar;C:\Jts\ibgateway\1037\jars\locales.jar;C:\Jts\ibgateway\1037\jars\log4j-api-2.17.1.jar;C:\Jts\ibgateway\1037\jars\log4j-core-2.17.1.jar;C:\Jts\ibgateway\1037\jars\protobuf-java-3.25.6.jar;C:\Jts\ibgateway\1037\jars\total-2024.jar;C:\Jts\ibgateway\1037\jars\twslaunch-1037.jar;C:\Jts\ibgateway\1037\jars\twslaunch-install4j-1.12.jar;C:\Jts\ibgateway\1037\jars\xmlgraphics-commons-2.8.jar;C:\Jts\ibgateway\1037\.install4j\i4jruntime.jar
+java.vm.vendor = Azul Systems, Inc.
+sun.arch.data.model = 64
+user.variant = 
+java.vendor.url = http://www.azul.com/
+user.timezone = Europe/Warsaw
+java.vm.specification.version = 17
+os.name = Windows 11
+sun.locale.formatasdefault = true
+sun.java.launcher = SUN_STANDARD
+user.country = FR
+sun.boot.library.path = C:\Users\ANTEC MSI\AppData\Local\Programs\Common\i4j_jres\Oda-jK0QgTEmVssfllLP\17.0.10.0.101-zulu_64\bin
+sun.java.command = ibcalpha.ibc.IbcGateway C:\Users\ANTEC *** *** paper
+jdk.debug = release
+sun.cpu.endian = little
+user.home = C:\Users\ANTEC MSI
+user.language = fr
+java.specification.vendor = Oracle Corporation
+java.version.date = 2024-04-16
+java.home = C:\Users\ANTEC MSI\AppData\Local\Programs\Common\i4j_jres\Oda-jK0QgTEmVssfllLP\17.0.10.0.101-zulu_64
+file.separator = \
+vmOptionsPath = C:\Jts\ibgateway\1037\ibgateway.vmoptions
+java.vm.compressedOopsMode = 32-bit
+line.separator = 
+
+java.vm.specification.vendor = Oracle Corporation
+java.specification.name = Java Platform API Specification
+user.script = 
+sun.management.compiler = HotSpot 64-Bit Tiered Compilers
+java.runtime.version = 17.0.10.0.101+3-LTS
+user.name = ANTEC MSI
+path.separator = ;
+os.version = 10.0
+java.runtime.name = OpenJDK Runtime Environment
+sun.java2d.noddraw = true
+file.encoding = Cp1252
+java.vm.name = OpenJDK 64-Bit Server VM
+java.vendor.version = Zulu17.49+16-SA
+installer.uuid = eb186466-5ac5-4b26-8eb0-e274342e0076
+java.vendor.url.bug = http://www.azul.com/support/
+java.io.tmpdir = C:\Users\ANTECM~1\AppData\Local\Temp\
+java.version = 17.0.10.0.101
+user.dir = C:\Jts
+os.arch = amd64
+java.vm.specification.name = Java Virtual Machine Specification
+sun.awt.nopixfmt = true
+swing.boldMetal = false
+sun.os.patch.level = 
+native.encoding = Cp1252
+java.library.path = C:\Users\ANTEC MSI\AppData\Local\Programs\Common\i4j_jres\Oda-jK0QgTEmVssfllLP\17.0.10.0.101-zulu_64\bin;C:\WINDOWS\Sun\Java\bin;C:\WINDOWS\system32;C:\WINDOWS;C:\Python314\Scripts\;C:\Python314\;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\nodejs\;C:\ProgramData\chocolatey\bin;C:\Program Files\Git\cmd;C:\Program Files\dotnet\;C:\Python314\Scripts\;C:\Python314\;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\nodejs\;C:\ProgramData\chocolatey\bin;C:\Program Files\Git\cmd;C:\Users\ANTEC MSI\AppData\Local\Programs\Python\Python312\Scripts\;C:\Users\ANTEC MSI\AppData\Local\Programs\Python\Python312\;C:\Users\ANTEC MSI\AppData\Local\Microsoft\WindowsApps;C:\Users\ANTEC MSI\AppData\Local\Programs\Antigravity\bin;C:\Users\ANTEC MSI\AppData\Roaming\npm;c:\Users\ANTEC MSI\.antigravity\extensions\ms-python.debugpy-2025.18.0-win32-x64\bundled\scripts\noConfigScripts;C:\Users\ANTEC MSI\.local\bin;c:\Users\ANTEC MSI\.antigravity\extensions\ms-python.debugpy-2026.6.0-win32-x64\bundled\scripts\noConfigScripts;.
+java.vm.info = mixed mode
+java.vendor = Azul Systems, Inc.
+java.vm.version = 17.0.10.0.101+3-LTS
+sun.io.unicode.encoding = UnicodeLittle
+java.class.version = 61.0
+------------------------------------------------------------
+2026-05-14 19:51:44:094 IBC: using default settings provider: ini file is C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\ibc_config.ini
+2026-05-14 19:51:44:094 IBC: using default login manager: will get username and password from settings; FIX username and password (if required) from settings
+2026-05-14 19:51:44:094 IBC: using default main window manager
+2026-05-14 19:51:44:094 IBC: using default trading mode manager: constructor parameter args: tradingMode=paper
+2026-05-14 19:51:44:094 IBC: using default config dialog manager
+2026-05-14 19:51:44:097 IBC: CommandServer is not started because the port is not configured
+2026-05-14 19:51:44:170 IBC: TWS Settings directory is: C:\Jts
+2026-05-14 19:51:44:170 IBC: Starting session: will exit if login dialog is not displayed within 60 seconds
+2026-05-14 19:51:44:177 IBC: Ensuring C:\Jts\jts.ini contains required minimal lines
+2026-05-14 19:51:44:177 IBC: Found setting: [Logon]/s3store=true
+2026-05-14 19:51:44:177 IBC: Found setting: [Logon]/Locale=en
+2026-05-14 19:51:44:177 IBC: Found setting: [Logon]/displayedproxymsg=1
+2026-05-14 19:51:44:177 IBC: Found setting: [Logon]/UseSSL=true
+2026-05-14 19:51:44:177 IBC: Found setting: [IBGateway]/ApiOnly=true
+2026-05-14 19:51:44:177 IBC: Found setting: [IBGateway]/TrustedIPs=127.0.0.1
+2026-05-14 19:51:44:177 IBC: Confirmed C:\Jts\jts.ini contains required minimal lines
+2026-05-14 19:51:44:177 IBC: Starting Gateway

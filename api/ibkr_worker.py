@@ -105,3 +105,103 @@ def log_order(type_: str, message: str, status: str = "ok") -> None:
         "message": message,
         "status": status,
     })
+
+
+# ── Auto-reconnect engine ──
+import time as _time
+from core.config import get_logger
+
+_reconnect_log = get_logger("api.ibkr.reconnect")
+
+MAX_RECONNECT_ATTEMPTS = 5
+RECONNECT_BACKOFF = [2, 4, 8, 16, 30]  # seconds between each attempt
+
+_suppress_reconnect: bool = False
+_reconnect_lock = threading.Lock()
+_reconnect_thread: threading.Thread | None = None
+
+
+def suppress_reconnect(val: bool) -> None:
+    """Enable/disable reconnect suppression (used during intentional disconnects)."""
+    global _suppress_reconnect
+    _suppress_reconnect = val
+
+
+def trigger_reconnect() -> None:
+    """Trigger an auto-reconnect if not suppressed and not already in progress."""
+    global _reconnect_thread
+    if _suppress_reconnect:
+        _reconnect_log.info("Reconnect suppressed (intentional disconnect)")
+        return
+    with _reconnect_lock:
+        if _reconnect_thread is not None and _reconnect_thread.is_alive():
+            _reconnect_log.info("Reconnect already in progress, skipping")
+            return
+        _reconnect_thread = threading.Thread(target=_do_reconnect, daemon=True)
+        _reconnect_thread.start()
+
+
+def _do_reconnect() -> None:
+    """Attempt to reconnect to IBKR with exponential backoff."""
+    # Import here to avoid circular import at module load
+    from core.trader import connect_ibkr, verify_paper
+
+    host = ib_state["host"]
+    port = ib_state["port"]
+
+    for attempt in range(MAX_RECONNECT_ATTEMPTS):
+        if _suppress_reconnect:
+            _reconnect_log.info("Reconnect aborted (suppress flag set)")
+            return
+
+        wait = RECONNECT_BACKOFF[attempt]
+        _reconnect_log.warning(
+            "Auto-reconnect attempt %d/%d in %ds to %s:%d",
+            attempt + 1, MAX_RECONNECT_ATTEMPTS, wait, host, port,
+        )
+        _time.sleep(wait)
+
+        # Maybe something else reconnected us already
+        if ib_state["connected"]:
+            _reconnect_log.info("Already reconnected, aborting")
+            return
+
+        if _suppress_reconnect:
+            _reconnect_log.info("Reconnect aborted (suppress flag set)")
+            return
+
+        try:
+            cid = next_client_id()
+
+            def do_connect():
+                ib = connect_ibkr(host, port, client_id=cid)
+                acct = verify_paper(ib)
+                return ib, acct
+
+            ib, acct = run_in_ib_thread(do_connect)
+
+            ib_state["ib"] = ib
+            ib_state["connected"] = True
+            ib_state["account"] = acct
+            ib_state["connect_time"] = datetime.now().isoformat()
+
+            # Attach disconnect handler for the new connection
+            from api.routes_trading import _attach_disconnect_handler
+            _attach_disconnect_handler(ib)
+
+            _reconnect_log.warning(
+                "Auto-reconnect successful: %s @ %s:%d", acct, host, port,
+            )
+            log_order("reconnect", f"Auto-reconnect successful: {acct}")
+            return
+
+        except Exception as ex:
+            _reconnect_log.warning(
+                "Auto-reconnect attempt %d/%d failed: %s",
+                attempt + 1, MAX_RECONNECT_ATTEMPTS, ex,
+            )
+
+    _reconnect_log.error(
+        "Auto-reconnect failed after %d attempts", MAX_RECONNECT_ATTEMPTS,
+    )
+    log_order("reconnect", f"Auto-reconnect failed after {MAX_RECONNECT_ATTEMPTS} attempts", "error")

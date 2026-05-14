@@ -23,6 +23,17 @@ dev = [
     "httpx>=0.24",
 ]
 
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["F", "E"]
+ignore = [
+    "E402",  # imports after sys.path manipulation
+    "E501",  # line length (not enforced)
+    "E712",  # == True/False (intentional for pandas boolean ops)
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

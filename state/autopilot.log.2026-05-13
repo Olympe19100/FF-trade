@@ -1,0 +1,140 @@
+[2026-05-13 13:43:25] [INFO] DAEMON: [DAEMON] Daemon stopped
+[2026-05-13 13:44:06] [INFO] DAEMON: [DAEMON] Daemon started — schedule: 09:00 Scan | 10:15 Trade | 16:30 Monitor
+[2026-05-13 15:00:06] [INFO] DAEMON: [SCAN] Starting scheduled scan...
+[2026-05-13 15:00:06] [INFO] ============================================================
+[2026-05-13 15:00:06] [INFO] AUTOPILOT - SCAN [THETA]
+[2026-05-13 15:00:06] [INFO] ============================================================
+[2026-05-13 15:03:17] [INFO] SCAN: Found 41 signals (top 5: QCOM, KO, AG, FCX, INTC)
+[2026-05-13 15:03:17] [DEBUG]   QCOM 16-100 FF=0.516 cost=$13.77
+[2026-05-13 15:03:17] [DEBUG]   KO 16-65 FF=0.222 cost=$1.23
+[2026-05-13 15:03:17] [DEBUG]   AG 23-100 FF=0.177 cost=$2.01
+[2026-05-13 15:03:17] [DEBUG]   FCX 23-65 FF=0.175 cost=$2.05
+[2026-05-13 15:03:17] [DEBUG]   INTC 16-65 FF=0.173 cost=$8.3
+[2026-05-13 15:03:17] [INFO] DAEMON: [SCAN] Scan completed
+[2026-05-13 16:15:17] [INFO] DAEMON: [TRADE] Starting scheduled trade...
+[2026-05-13 16:15:17] [INFO] TRADE_WEB Step 1: Closing expiring positions
+[2026-05-13 16:15:17] [INFO] TRADE_WEB Step 2: Entering new positions
+[2026-05-13 16:29:53] [INFO] TRADE_WEB: Entered 0 new positions
+[2026-05-13 16:29:53] [INFO] TRADE_WEB complete: 0 closed, 0 entered
+[2026-05-13 16:29:53] [INFO] DAEMON: [TRADE] Trade completed: 0 closed, 0 entered
+[2026-05-13 20:21:04] [INFO] Autopilot started - scan=False trade=False paper=False daemon=False monitor=True report=False full=False scan_mode=theta dry_run=False
+[2026-05-13 20:21:04] [INFO] ============================================================
+[2026-05-13 20:21:04] [INFO] AUTOPILOT - MONITOR (ThetaData)
+[2026-05-13 20:21:04] [INFO] ============================================================
+[2026-05-13 20:21:04] [INFO] MONITOR: Pricing 6 active positions via ThetaData
+[2026-05-13 20:21:09] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260513.json
+[2026-05-13 20:21:09] [INFO] Autopilot finished
+[2026-05-13 21:27:17] [INFO] Autopilot started - scan=False trade=False paper=False daemon=False monitor=True report=False full=False scan_mode=theta dry_run=False
+[2026-05-13 21:27:17] [INFO] ============================================================
+[2026-05-13 21:27:17] [INFO] AUTOPILOT - MONITOR (ThetaData)
+[2026-05-13 21:27:17] [INFO] ============================================================
+[2026-05-13 21:27:17] [INFO] MONITOR: Pricing 9 active positions via ThetaData
+[2026-05-13 21:27:24] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260513.json
+[2026-05-13 21:27:24] [INFO] Autopilot finished
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-13 21:43:15] [INFO]   Closing AAPL 30-60 (front exp 2026-05-14, 0d left)
+[2026-05-13 21:43:15] [INFO]   CLOSED AAPL exit=$7.00 P&L=$+134.80 (+11.1%)
+[2026-05-13 21:43:15] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-13 21:43:15] [INFO]   No signals available
+[2026-05-13 21:43:15] [INFO] PAPER complete: 1 closed, 0 entered
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-13 21:43:15] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-13 21:43:15] [INFO]   No signals available
+[2026-05-13 21:43:15] [INFO] PAPER complete: 0 closed, 0 entered
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-13 21:43:15] [INFO]   Closing AAPL 30-60 (front exp 2026-05-14, 0d left)
+[2026-05-13 21:43:15] [WARNING]   Cannot price AAPL for close, skipping
+[2026-05-13 21:43:15] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-13 21:43:15] [INFO]   No signals available
+[2026-05-13 21:43:15] [INFO] PAPER complete: 0 closed, 0 entered
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-13 21:43:15] [INFO]   Closing AAPL 30-60 (front exp 2026-05-13, -1d left)
+[2026-05-13 21:43:15] [INFO]   CLOSED AAPL exit=$7.50 P&L=$+234.80 (+19.0%)
+[2026-05-13 21:43:15] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-13 21:43:15] [INFO]   No signals available
+[2026-05-13 21:43:15] [INFO] PAPER complete: 1 closed, 0 entered
+[2026-05-13 21:43:15] [ERROR] DAEMON: [DAEMON] Scheduler error: 'NoneType' object has no attribute 'run_pending'
+[2026-05-13 21:43:15] [INFO] DAEMON: [DAEMON] Daemon started — schedule: 09:00 Scan | 10:15 Trade | 16:30 Monitor
+[2026-05-13 21:43:15] [INFO] DAEMON: [DAEMON] Daemon stopped
+[2026-05-13 21:43:15] [WARNING] DAEMON: [TRADE] No IBKR state available — skipping trade
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-13 21:43:15] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-13 21:43:15] [INFO]   Paper account: $100,000
+[2026-05-13 21:43:15] [INFO]   Realized P&L:  $+0
+[2026-05-13 21:43:15] [INFO]   Deployed:      $0
+[2026-05-13 21:43:15] [INFO]   Available:     $100,000
+[2026-05-13 21:43:15] [INFO]   Kelly f:       0.0400 (4.0%)
+[2026-05-13 21:43:15] [INFO]   Slots:         20
+[2026-05-13 21:43:15] [INFO]   ENTERED AAPL 30-60 FF=0.350 2x @ $3.53/sh (single)
+[2026-05-13 21:43:15] [INFO]   ENTERED MSFT 30-60 FF=0.300 2x @ $3.53/sh (single)
+[2026-05-13 21:43:15] [INFO] PAPER complete: 0 closed, 2 entered
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-13 21:43:15] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-13 21:43:15] [INFO]   Paper account: $100,000
+[2026-05-13 21:43:15] [INFO]   Realized P&L:  $+0
+[2026-05-13 21:43:15] [INFO]   Deployed:      $1,324
+[2026-05-13 21:43:15] [INFO]   Available:     $98,676
+[2026-05-13 21:43:15] [INFO]   Kelly f:       0.0400 (4.0%)
+[2026-05-13 21:43:15] [INFO]   Slots:         19
+[2026-05-13 21:43:15] [INFO]   ENTERED MSFT 30-60 FF=0.300 2x @ $3.53/sh (single)
+[2026-05-13 21:43:15] [INFO] PAPER complete: 0 closed, 1 entered
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-13 21:43:15] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-13 21:43:15] [INFO]   Portfolio full: 35/20
+[2026-05-13 21:43:15] [INFO] PAPER complete: 0 closed, 0 entered
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-13 21:43:15] [INFO]   Closing OLD 30-60 (front exp 2026-05-13, -1d left)
+[2026-05-13 21:43:15] [INFO]   CLOSED OLD exit=$7.00 P&L=$+67.40 (+11.1%)
+[2026-05-13 21:43:15] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-13 21:43:15] [INFO]   Paper account: $100,000
+[2026-05-13 21:43:15] [INFO]   Realized P&L:  $+0
+[2026-05-13 21:43:15] [INFO]   Deployed:      $1,324
+[2026-05-13 21:43:15] [INFO]   Available:     $98,676
+[2026-05-13 21:43:15] [INFO]   Kelly f:       0.0400 (4.0%)
+[2026-05-13 21:43:15] [INFO]   Slots:         19
+[2026-05-13 21:43:15] [INFO]   ENTERED AAPL 30-60 FF=0.350 1x @ $3.53/sh (single)
+[2026-05-13 21:43:15] [INFO]   ENTERED MSFT 30-60 FF=0.300 1x @ $3.53/sh (single)
+[2026-05-13 21:43:15] [INFO] PAPER complete: 1 closed, 2 entered
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-13 21:43:15] [INFO] ============================================================
+[2026-05-13 21:43:15] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 0)
+[2026-05-13 21:43:15] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-13 21:43:15] [INFO]   No signals available
+[2026-05-13 21:43:15] [INFO] PAPER complete: 0 closed, 0 entered
+[2026-05-13 22:30:21] [INFO] DAEMON: [MONITOR] Starting scheduled monitor + report...
+[2026-05-13 22:30:21] [INFO] ============================================================
+[2026-05-13 22:30:21] [INFO] AUTOPILOT - MONITOR (ThetaData)
+[2026-05-13 22:30:21] [INFO] ============================================================
+[2026-05-13 22:30:21] [INFO] MONITOR: Pricing 9 active positions via ThetaData
+[2026-05-13 22:30:28] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260513.json
+[2026-05-13 22:30:28] [INFO] ============================================================
+[2026-05-13 22:30:28] [INFO] AUTOPILOT - REPORT
+[2026-05-13 22:30:28] [INFO] ============================================================
+[2026-05-13 22:30:28] [INFO] Report generated (2493 chars)
+[2026-05-13 22:30:28] [INFO] Email disabled in config, skipping
+[2026-05-13 22:30:28] [INFO] DAEMON: [MONITOR] Monitor + report completed

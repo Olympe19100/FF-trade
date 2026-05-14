@@ -697,13 +697,9 @@ def test_sizing_sort_order_divergence():
 # ═══════════════════════════════════════════════════════════════
 
 def test_risk_free_rate_consistent():
-    """pricing.py RISK_FREE_RATE is used by scanner.py and spreads.py."""
+    """pricing.py RISK_FREE_RATE is the single source of truth."""
     from core.pricing import RISK_FREE_RATE as pricing_r
 
-    # scanner.py imports from pricing
-    from core.scanner import RISK_FREE_RATE as scanner_r
-
-    assert pricing_r == scanner_r
     assert pricing_r == 0.04  # Hardcoded known value
 
 

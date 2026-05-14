@@ -1,12 +1,12 @@
 """
-Liquidate All Positions — Close every active spread on IBKR
+Liquidate ALL Positions — Close every IBKR option position.
 
-Connects to IBKR Gateway, iterates through portfolio.json,
-and closes each position via execute_spread_close (combo-first, legs-fallback).
+Queries IBKR positions directly (not portfolio.json), then closes each
+using execute_leg with IBKR OPRA pricing.
 
 Usage:
-    python tools/liquidate_all.py              # Dry run: show what would be closed
-    python tools/liquidate_all.py --live       # Execute closes on IBKR
+    python tools/liquidate_all.py              # Dry run
+    python tools/liquidate_all.py --live       # Execute
     python tools/liquidate_all.py --port 7497  # TWS instead of Gateway
 """
 
@@ -25,122 +25,121 @@ except RuntimeError:
 
 from ib_insync import IB
 
-from core.config import (
-    DEFAULT_HOST, GW_PAPER, CLIENT_ID, COMMISSION_LEG, CONTRACT_MULT,
-    get_logger,
-)
-from core.portfolio import load_portfolio, save_portfolio, record_trade
-from core.trader import (
-    connect_ibkr, verify_paper,
-    close_position_ibkr,
-)
+from core.config import DEFAULT_HOST, GW_PAPER, CLIENT_ID, get_logger
+from core.execution import execute_leg
 
-log = get_logger("liquidate")
+log = get_logger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Liquidate all active positions")
-    parser.add_argument("--live", action="store_true", help="Execute real orders (default: dry run)")
-    parser.add_argument("--port", type=int, default=GW_PAPER, help="IBKR port (default: 4002)")
+    parser = argparse.ArgumentParser(description="Liquidate all IBKR option positions")
+    parser.add_argument("--port", type=int, default=GW_PAPER)
+    parser.add_argument("--live", action="store_true", help="Execute (default: dry run)")
+    parser.add_argument("--skip", default="", help="Comma-separated tickers to skip")
     args = parser.parse_args()
 
-    # ── Load portfolio ──
-    portfolio = load_portfolio()
-    active = [p for p in portfolio["positions"] if "exit_date" not in p]
-
-    if not active:
-        log.info("No active positions to liquidate.")
-        return
-
-    log.info("=" * 60)
-    log.info("LIQUIDATE ALL — %d active positions", len(active))
-    log.info("=" * 60)
-
-    total_deployed = 0.0
-    for p in active:
-        ps = p.get("put_strike", p["strike"])
-        log.info("  %s  CallK=%.0f  PutK=%.0f  x%d  %s  cost=$%.2f  deployed=$%.0f",
-                 p["ticker"], p["strike"], ps,
-                 p["contracts"], p["combo"],
-                 p["cost_per_share"], p["total_deployed"])
-        total_deployed += p["total_deployed"]
-
-    log.info("  Total deployed: $%s", f"{total_deployed:,.0f}")
-
-    if not args.live:
-        log.info("")
-        log.info("DRY RUN — add --live to execute.")
-        return
-
-    # ── Connect to IBKR ──
-    log.info("")
-    log.info("Connecting to IBKR on port %d...", args.port)
     ib = IB()
-    ib.connect(DEFAULT_HOST, args.port, clientId=CLIENT_ID + 10, timeout=15)
+    log.info("Connecting to IBKR at %s:%d ...", DEFAULT_HOST, args.port)
+    ib.connect(DEFAULT_HOST, args.port, clientId=CLIENT_ID + 5)
     log.info("Connected: %s", ib.isConnected())
 
-    acct = verify_paper(ib)
-    if not acct:
-        log.error("Not a paper account — aborting.")
+    positions = ib.positions()
+    option_positions = [p for p in positions if p.contract.secType == "OPT"]
+
+    if not option_positions:
+        log.info("No option positions to liquidate.")
         ib.disconnect()
         return
 
-    log.info("Paper account: %s", acct)
-    log.info("")
+    log.info("=" * 60)
+    log.info("LIQUIDATING ALL POSITIONS (%d options)", len(option_positions))
+    log.info("=" * 60)
 
-    # ── Close each position ──
-    results = []
-    for pos in active:
-        ticker = pos["ticker"]
-        log.info("─" * 50)
-        log.info("CLOSING %s  x%d ...", ticker, pos["contracts"])
+    for p in sorted(option_positions, key=lambda x: (x.contract.symbol, x.contract.strike)):
+        c = p.contract
+        side = "LONG" if p.position > 0 else "SHORT"
+        avg_cost = getattr(p, "avgCost", 0) or 0
+        log.info("  %6s %5s %s %s K=%7.1f x%-4d avgCost=$%.2f",
+                 c.symbol, side, c.right, c.lastTradeDateOrContractMonth,
+                 c.strike, abs(p.position), avg_cost)
 
-        result = close_position_ibkr(ib, pos)
+    if not args.live:
+        log.info("\n  DRY RUN — pass --live to execute")
+        ib.disconnect()
+        return
 
-        if result.get("success"):
-            # Update portfolio state
-            from datetime import datetime
-            pos["exit_date"] = datetime.now().strftime("%Y-%m-%d")
-            pos["exit_price"] = result["exit_price"]
-            pos["pnl"] = result["pnl"]
-            pos["return_pct"] = result["return_pct"]
-            pos["close_method"] = result.get("method", "unknown")
+    # Skip orphans with no market data (micro-caps without OPRA quotes)
+    SKIP_TICKERS = set()
+    if args.skip:
+        SKIP_TICKERS = set(t.strip().upper() for t in args.skip.split(","))
+        log.info("  Skipping tickers: %s", ", ".join(sorted(SKIP_TICKERS)))
 
-            record_trade(pos, result["exit_price"], result["pnl"], result["return_pct"])
+    log.info("\n  LIVE MODE — closing positions\n")
 
-            log.info("  OK  exit=$%.2f  P&L=$%s  (%+.1f%%)  method=%s",
-                     result["exit_price"], f"{result['pnl']:+,.2f}",
-                     result["return_pct"] * 100, result.get("method"))
+    filled = 0
+    failed = 0
+    skipped = 0
+
+    for p in sorted(option_positions, key=lambda x: (x.contract.symbol, x.contract.strike)):
+        c = p.contract
+        qty = abs(int(p.position))
+        action = "SELL" if p.position > 0 else "BUY"
+        side = "LONG" if p.position > 0 else "SHORT"
+
+        if c.symbol in SKIP_TICKERS:
+            log.info("--- %s: SKIPPED (--skip) ---", c.symbol)
+            skipped += 1
+            continue
+
+        log.info("--- %s %s %s %s K=%.0f x%d ---",
+                 c.symbol, side, c.right, c.lastTradeDateOrContractMonth,
+                 c.strike, qty)
+
+        # Qualify the contract on IBKR
+        try:
+            ib.qualifyContracts(c)
+            if c.conId == 0:
+                log.error("  Cannot qualify contract")
+                failed += 1
+                continue
+        except Exception as ex:
+            log.error("  Cannot qualify: %s", ex)
+            failed += 1
+            continue
+
+        # Use execute_leg (IBKR primary pricing)
+        avg_cost = getattr(p, "avgCost", 0) or 0
+        eodhd_mid = avg_cost / 100 if avg_cost > 0 else 0  # avgCost is per-share * 100
+
+        try:
+            ok, fill_px = execute_leg(ib, c, action, qty, eodhd_mid=eodhd_mid)
+        except (ConnectionError, OSError) as ex:
+            log.error("  Connection error: %s — reconnecting", ex)
+            try:
+                ib.disconnect()
+                ib.sleep(3)
+                ib.connect(DEFAULT_HOST, args.port, clientId=CLIENT_ID + 5)
+                log.info("  Reconnected")
+            except Exception:
+                log.error("  Cannot reconnect — stopping")
+                break
+            failed += 1
+            continue
+
+        if ok:
+            log.info("  => FILLED @ $%.2f", fill_px)
+            filled += 1
         else:
-            log.error("  FAILED: %s", result.get("error", "unknown"))
+            log.error("  => FAILED to close")
+            failed += 1
 
-        results.append({"ticker": ticker, **result})
+        ib.sleep(2)
 
-    save_portfolio(portfolio)
-
-    # ── Summary ──
-    log.info("")
     log.info("=" * 60)
-    log.info("LIQUIDATION SUMMARY")
+    log.info("LIQUIDATION COMPLETE: %d filled, %d failed out of %d",
+             filled, failed, len(option_positions))
     log.info("=" * 60)
-
-    ok = [r for r in results if r.get("success")]
-    fail = [r for r in results if not r.get("success")]
-    total_pnl = sum(r.get("pnl", 0) for r in ok)
-
-    for r in ok:
-        log.info("  %s  exit=$%.2f  P&L=$%s  %s",
-                 r["ticker"], r["exit_price"], f"{r['pnl']:+,.2f}", r.get("method"))
-    for r in fail:
-        log.info("  %s  FAILED: %s", r["ticker"], r.get("error", "?"))
-
-    log.info("")
-    log.info("  Closed: %d/%d", len(ok), len(results))
-    log.info("  Total P&L: $%s", f"{total_pnl:+,.2f}")
-
-    # ── Cleanup ──
     ib.disconnect()
-    log.info("Disconnected.")
 
 
 if __name__ == "__main__":

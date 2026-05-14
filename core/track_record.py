@@ -12,7 +12,6 @@ chart shows the full timeline up to now.
 import json
 import math
 from datetime import datetime
-from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")

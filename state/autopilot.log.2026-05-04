@@ -1,0 +1,161 @@
+[2026-05-04 09:35:14] [INFO] DAEMON: [DAEMON] Daemon started — schedule: 09:00 Scan | 10:15 Trade | 16:30 Monitor
+[2026-05-04 15:00:15] [INFO] DAEMON: [SCAN] Starting scheduled scan...
+[2026-05-04 15:00:15] [INFO] ============================================================
+[2026-05-04 15:00:15] [INFO] AUTOPILOT - SCAN
+[2026-05-04 15:00:15] [INFO] ============================================================
+[2026-05-04 15:01:12] [INFO] SCAN: Found 30 signals (top 5: BMY, INTC, NOW, CVX, XOM)
+[2026-05-04 15:01:12] [DEBUG]   BMY 18-74 FF=0.378 dbl=$2.3
+[2026-05-04 15:01:12] [DEBUG]   INTC 18-45 FF=0.225 dbl=$6.75
+[2026-05-04 15:01:12] [DEBUG]   NOW 18-74 FF=0.215 dbl=$7.3
+[2026-05-04 15:01:12] [DEBUG]   CVX 18-74 FF=0.199 dbl=$8.27
+[2026-05-04 15:01:12] [DEBUG]   XOM 18-74 FF=0.194 dbl=$7.02
+[2026-05-04 15:01:12] [INFO] DAEMON: [SCAN] Scan completed
+[2026-05-04 16:15:12] [INFO] DAEMON: [TRADE] Starting scheduled trade...
+[2026-05-04 16:15:12] [INFO] TRADE_WEB Step 1: Closing expiring positions
+[2026-05-04 16:15:12] [INFO] TRADE_WEB Step 2: Entering new positions
+[2026-05-04 16:15:12] [INFO] TRADE_WEB complete: 0 closed, 0 entered
+[2026-05-04 16:15:12] [INFO] DAEMON: [TRADE] Trade completed: 0 closed, 0 entered
+[2026-05-04 20:29:59] [INFO] ============================================================
+[2026-05-04 20:29:59] [INFO] AUTOPILOT - TRADE 
+[2026-05-04 20:29:59] [INFO] ============================================================
+[2026-05-04 20:29:59] [INFO] TRADE Step 1: Closing expiring positions
+[2026-05-04 20:29:59] [INFO] TRADE Step 2: Entering new positions
+[2026-05-04 20:32:46] [ERROR] TRADE error: name 'limit_price' is not defined
+Traceback (most recent call last):
+  File "C:\Users\ANTEC MSI\Desktop\pro\Option trading\core\autopilot.py", line 248, in run_trade
+    enter_result = enter_new_positions(ib, acct, max_new=max(0, max_new))
+  File "C:\Users\ANTEC MSI\Desktop\pro\Option trading\core\trader.py", line 550, in enter_new_positions
+    result, fill_cost, slippage, details = execute_spread(
+                                           ~~~~~~~~~~~~~~^
+        ib, ticker, legs, n_legs, contracts, cps, spread_type
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\ANTEC MSI\Desktop\pro\Option trading\core\execution.py", line 306, in execute_spread
+    filled, fill_px, slippage = execute_combo(
+                                ~~~~~~~~~~~~~^
+        ib, combo, "BUY", contracts, eodhd_cps, legs=legs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\ANTEC MSI\Desktop\pro\Option trading\core\execution.py", line 184, in execute_combo
+    COMBO_TIMEOUT, limit_price)
+                   ^^^^^^^^^^^
+NameError: name 'limit_price' is not defined
+[2026-05-04 20:32:46] [INFO] Email disabled in config, skipping
+[2026-05-04 20:32:46] [INFO] Disconnected from IBKR
+[2026-05-04 20:33:59] [INFO] ============================================================
+[2026-05-04 20:33:59] [INFO] AUTOPILOT - TRADE 
+[2026-05-04 20:33:59] [INFO] ============================================================
+[2026-05-04 20:34:00] [INFO] TRADE Step 1: Closing expiring positions
+[2026-05-04 20:34:00] [INFO] TRADE Step 2: Entering new positions
+[2026-05-04 20:40:27] [INFO] TRADE: Entered 15 new positions
+[2026-05-04 20:40:27] [INFO] TRADE complete: 0 closed, 19 entered
+[2026-05-04 20:40:27] [INFO] Disconnected from IBKR
+[2026-05-04 21:19:48] [INFO] ============================================================
+[2026-05-04 21:19:48] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-04 21:19:48] [INFO] ============================================================
+[2026-05-04 21:19:48] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 1)
+[2026-05-04 21:19:48] [INFO]   Closing AAPL 30-60 (front exp 2026-05-05, 0d left)
+[2026-05-04 21:19:48] [INFO]   CLOSED AAPL exit=$7.00 P&L=$+134.80 (+11.1%)
+[2026-05-04 21:19:48] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-04 21:19:48] [INFO]   No signals available
+[2026-05-04 21:19:48] [INFO] PAPER complete: 1 closed, 0 entered
+[2026-05-04 21:19:48] [INFO] ============================================================
+[2026-05-04 21:19:48] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-04 21:19:48] [INFO] ============================================================
+[2026-05-04 21:19:48] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 1)
+[2026-05-04 21:19:48] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-04 21:19:48] [INFO]   No signals available
+[2026-05-04 21:19:48] [INFO] PAPER complete: 0 closed, 0 entered
+[2026-05-04 21:19:48] [INFO] ============================================================
+[2026-05-04 21:19:48] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-04 21:19:48] [INFO] ============================================================
+[2026-05-04 21:19:48] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 1)
+[2026-05-04 21:19:48] [INFO]   Closing AAPL 30-60 (front exp 2026-05-05, 0d left)
+[2026-05-04 21:19:48] [WARNING]   Cannot price AAPL for close, skipping
+[2026-05-04 21:19:48] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-04 21:19:48] [INFO]   No signals available
+[2026-05-04 21:19:48] [INFO] PAPER complete: 0 closed, 0 entered
+[2026-05-04 21:19:48] [INFO] ============================================================
+[2026-05-04 21:19:48] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-04 21:19:48] [INFO] ============================================================
+[2026-05-04 21:19:48] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 1)
+[2026-05-04 21:19:48] [INFO]   Closing AAPL 30-60 (front exp 2026-05-04, -1d left)
+[2026-05-04 21:19:48] [INFO]   CLOSED AAPL exit=$7.50 P&L=$+234.80 (+19.0%)
+[2026-05-04 21:19:48] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-04 21:19:48] [INFO]   No signals available
+[2026-05-04 21:19:48] [INFO] PAPER complete: 1 closed, 0 entered
+[2026-05-04 21:19:48] [ERROR] DAEMON: [DAEMON] Scheduler error: 'NoneType' object has no attribute 'run_pending'
+[2026-05-04 21:19:48] [INFO] DAEMON: [DAEMON] Daemon started — schedule: 09:00 Scan | 10:15 Trade | 16:30 Monitor
+[2026-05-04 21:19:48] [INFO] DAEMON: [DAEMON] Daemon stopped
+[2026-05-04 21:19:48] [WARNING] DAEMON: [TRADE] No IBKR state available — skipping trade
+[2026-05-04 21:19:49] [INFO] ============================================================
+[2026-05-04 21:19:49] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-04 21:19:49] [INFO] ============================================================
+[2026-05-04 21:19:49] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 1)
+[2026-05-04 21:19:49] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-04 21:19:49] [INFO]   Paper account: $100,000
+[2026-05-04 21:19:49] [INFO]   Realized P&L:  $+0
+[2026-05-04 21:19:49] [INFO]   Deployed:      $0
+[2026-05-04 21:19:49] [INFO]   Available:     $100,000
+[2026-05-04 21:19:49] [INFO]   Kelly f:       0.0400 (4.0%)
+[2026-05-04 21:19:49] [INFO]   Slots:         20
+[2026-05-04 21:19:49] [INFO]   ENTERED AAPL 30-60 FF=0.350 2x @ $6.33/sh (double)
+[2026-05-04 21:19:49] [INFO]   ENTERED MSFT 30-60 FF=0.300 2x @ $6.33/sh (double)
+[2026-05-04 21:19:49] [INFO] PAPER complete: 0 closed, 2 entered
+[2026-05-04 21:19:49] [INFO] ============================================================
+[2026-05-04 21:19:49] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-04 21:19:49] [INFO] ============================================================
+[2026-05-04 21:19:49] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 1)
+[2026-05-04 21:19:49] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-04 21:19:49] [INFO]   Paper account: $100,000
+[2026-05-04 21:19:49] [INFO]   Realized P&L:  $+0
+[2026-05-04 21:19:49] [INFO]   Deployed:      $1,324
+[2026-05-04 21:19:49] [INFO]   Available:     $98,676
+[2026-05-04 21:19:49] [INFO]   Kelly f:       0.0400 (4.0%)
+[2026-05-04 21:19:49] [INFO]   Slots:         19
+[2026-05-04 21:19:49] [INFO]   ENTERED MSFT 30-60 FF=0.300 2x @ $6.33/sh (double)
+[2026-05-04 21:19:49] [INFO] PAPER complete: 0 closed, 1 entered
+[2026-05-04 21:19:49] [INFO] ============================================================
+[2026-05-04 21:19:49] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-04 21:19:49] [INFO] ============================================================
+[2026-05-04 21:19:49] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 1)
+[2026-05-04 21:19:49] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-04 21:19:49] [INFO]   Portfolio full: 20/20
+[2026-05-04 21:19:49] [INFO] PAPER complete: 0 closed, 0 entered
+[2026-05-04 21:19:49] [INFO] ============================================================
+[2026-05-04 21:19:49] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-04 21:19:49] [INFO] ============================================================
+[2026-05-04 21:19:49] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 1)
+[2026-05-04 21:19:49] [INFO]   Closing OLD 30-60 (front exp 2026-05-04, -1d left)
+[2026-05-04 21:19:49] [INFO]   CLOSED OLD exit=$7.00 P&L=$+67.40 (+11.1%)
+[2026-05-04 21:19:49] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-04 21:19:49] [INFO]   Paper account: $100,000
+[2026-05-04 21:19:49] [INFO]   Realized P&L:  $+0
+[2026-05-04 21:19:49] [INFO]   Deployed:      $1,324
+[2026-05-04 21:19:49] [INFO]   Available:     $98,676
+[2026-05-04 21:19:49] [INFO]   Kelly f:       0.0400 (4.0%)
+[2026-05-04 21:19:49] [INFO]   Slots:         19
+[2026-05-04 21:19:49] [INFO]   ENTERED AAPL 30-60 FF=0.350 1x @ $6.33/sh (double)
+[2026-05-04 21:19:49] [INFO]   ENTERED MSFT 30-60 FF=0.300 1x @ $6.33/sh (double)
+[2026-05-04 21:19:49] [INFO] PAPER complete: 1 closed, 2 entered
+[2026-05-04 21:19:49] [INFO] ============================================================
+[2026-05-04 21:19:49] [INFO] AUTOPILOT - PAPER TRADE (ThetaData, no IBKR)
+[2026-05-04 21:19:49] [INFO] ============================================================
+[2026-05-04 21:19:49] [INFO] PAPER Step 1: Closing expiring positions (DTE <= 1)
+[2026-05-04 21:19:49] [INFO] PAPER Step 2: Entering new positions from latest signals
+[2026-05-04 21:19:49] [INFO]   No signals available
+[2026-05-04 21:19:49] [INFO] PAPER complete: 0 closed, 0 entered
+[2026-05-04 22:30:12] [INFO] DAEMON: [MONITOR] Starting scheduled monitor + report...
+[2026-05-04 22:30:12] [INFO] ============================================================
+[2026-05-04 22:30:12] [INFO] AUTOPILOT - MONITOR (ThetaData)
+[2026-05-04 22:30:12] [INFO] ============================================================
+[2026-05-04 22:30:12] [INFO] MONITOR: Pricing 19 active positions via ThetaData
+[2026-05-04 22:30:21] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260504.json
+[2026-05-04 22:30:21] [INFO] ============================================================
+[2026-05-04 22:30:21] [INFO] AUTOPILOT - REPORT
+[2026-05-04 22:30:21] [INFO] ============================================================
+[2026-05-04 22:30:21] [INFO] Report generated (4080 chars)
+[2026-05-04 22:30:21] [INFO] Email disabled in config, skipping
+[2026-05-04 22:30:21] [INFO] DAEMON: [MONITOR] Monitor + report completed

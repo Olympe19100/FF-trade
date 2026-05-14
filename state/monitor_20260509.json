@@ -1,0 +1,68 @@
+{
+  "type": "snapshot",
+  "positions": [
+    {
+      "ticker": "HAL",
+      "combo": "13-69",
+      "contracts": 10,
+      "strike": 44.0,
+      "put_strike": 41.0,
+      "entry_cost": 2.83,
+      "current_cost": 2.3,
+      "unrealized_pnl": -530.15,
+      "return_pct": -0.1873,
+      "front_dte": 12,
+      "stock_px": 0,
+      "source": "ibkr"
+    },
+    {
+      "ticker": "LRCX",
+      "combo": "13-40",
+      "contracts": 1,
+      "strike": 280.0,
+      "put_strike": 250.0,
+      "entry_cost": 14.18,
+      "current_cost": 14.44,
+      "unrealized_pnl": 25.91,
+      "return_pct": 0.0183,
+      "front_dte": 12,
+      "stock_px": 0,
+      "source": "ibkr"
+    },
+    {
+      "ticker": "AMD",
+      "combo": "21-70",
+      "contracts": 6,
+      "strike": 440.0,
+      "put_strike": 390.0,
+      "entry_cost": 41.6,
+      "current_cost": 39.09,
+      "unrealized_pnl": -1516.52,
+      "return_pct": -0.0608,
+      "front_dte": 19,
+      "stock_px": 0,
+      "source": "ibkr"
+    },
+    {
+      "ticker": "INTC",
+      "combo": "21-70",
+      "contracts": 10,
+      "strike": 120.0,
+      "put_strike": 105.0,
+      "entry_cost": 13.85,
+      "current_cost": 13.3,
+      "unrealized_pnl": -567.15,
+      "return_pct": -0.0409,
+      "front_dte": 19,
+      "stock_px": 0,
+      "source": "ibkr"
+    }
+  ],
+  "errors": [],
+  "total_unrealized_pnl": -2587.91,
+  "n_active": 4,
+  "n_priced": 4,
+  "date": "2026-05-09",
+  "time": "00:01:12",
+  "timestamp": 1778277672.7431319
+}

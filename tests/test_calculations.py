@@ -629,7 +629,7 @@ class TestPerformanceMetrics:
         std_r = daily_returns.std()
         n_per_year = len(daily_returns) / 1.0  # assume 1 year
         sharpe = mean_r / std_r * np.sqrt(n_per_year)
-        assert sharpe > 0, f"Positive-edge returns should have positive Sharpe"
+        assert sharpe > 0, "Positive-edge returns should have positive Sharpe"
 
     def test_max_drawdown_known(self):
         """Known drawdown: 100 -> 120 -> 90 -> 110 => DD = (90-120)/120 = -25%."""
@@ -1754,7 +1754,7 @@ class TestMarkToMarket:
         """When a leg price is missing for one position but another is fully
         priced, the missing-leg position falls back to deployed while the
         priced position uses live MTM."""
-        from core.backtest import _compute_mtm_value, CONTRACT_MULT
+        from core.backtest import _compute_mtm_value
 
         strike1 = 170000
         strike2 = 180000

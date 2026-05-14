@@ -101,7 +101,7 @@ for short_dte, long_dte in DTE_COMBOS:
     print(f"    Back candidates: {len(back)} (DTE {long_dte}+/-{DTE_TOL})")
 
     if front.empty or back.empty:
-        print(f"    SKIP: no front or back options")
+        print("    SKIP: no front or back options")
         continue
 
     # ATM

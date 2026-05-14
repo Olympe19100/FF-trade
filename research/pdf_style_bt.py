@@ -11,7 +11,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize_scalar
-from datetime import datetime
 from pathlib import Path
 
 OUT = Path(r"C:\Users\ANTEC MSI\Desktop\pro\Option trading\output")
@@ -115,7 +114,7 @@ for ci, combo in enumerate(["30-60", "30-90", "60-90"]):
     print(f"  $100K -> ours: ${end_o:,.0f} | pdf_k: ${end_p:,.0f}")
 
     # FF quintiles
-    print(f"  FF -> Return monotonicity:")
+    print("  FF -> Return monotonicity:")
     for q in sorted(sub_q["ff_q"].unique()):
         grp = sub_q[sub_q["ff_q"] == q]
         print(f"    Q{q}: FF=[{grp['ff'].min():.3f}-{grp['ff'].max():.3f}], "
@@ -153,4 +152,4 @@ for ci, combo in enumerate(["30-60", "30-90", "60-90"]):
 plt.tight_layout(rect=[0, 0, 1, 0.94])
 fig.savefig(str(OUT / "pdf_exact_methodology.png"), dpi=150,
             bbox_inches="tight")
-print(f"\nChart: output/pdf_exact_methodology.png")
+print("\nChart: output/pdf_exact_methodology.png")

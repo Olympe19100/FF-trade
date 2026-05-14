@@ -11,7 +11,6 @@ Usage:
 import sys
 import json
 import pandas as pd
-import numpy as np
 from pathlib import Path
 from datetime import datetime
 
@@ -77,29 +76,19 @@ def build_simulated_portfolio(signals, account_value=None):
             except ValueError:
                 continue
 
-            # Use dbl_cost if available, else call_cost
-            has_dbl = pd.notna(sig.get("dbl_cost")) and sig["dbl_cost"] > 0
-            cost = sig["dbl_cost"] if has_dbl else sig["call_cost"]
-            spread_type = "double" if has_dbl else "single"
+            cost = sig["call_cost"]
 
-            # Put strike (newer schema has it, older doesn't)
-            put_strike = sig.get("put_strike")
-            if pd.isna(put_strike) if isinstance(put_strike, float) else put_strike is None:
-                put_strike = sig["strike"]
-
-            n_legs = 4 if spread_type == "double" else 2
             pos = {
                 "ticker": ticker,
                 "combo": sig["combo"],
                 "strike": float(sig["strike"]),
-                "put_strike": float(put_strike),
-                "spread_type": spread_type,
+                "spread_type": "single",
                 "front_exp": front_exp,
                 "back_exp": sig["back_exp"],
                 "entry_date": signal_date,
                 "contracts": 1,  # placeholder, sized below
                 "cost_per_share": float(cost),
-                "n_legs": n_legs,
+                "n_legs": 2,
                 "ff": float(sig["ff"]),
                 "stock_px_entry": float(sig["stock_px"]),
             }
@@ -169,7 +158,7 @@ def price_positions(positions):
 def display_results(results, errors, positions):
     """Pretty-print the simulation results."""
     print(f"\n{'='*90}")
-    print(f"SIMULATION: MONITOR — Positions prises sur les signaux historiques")
+    print("SIMULATION: MONITOR — Positions prises sur les signaux historiques")
     print(f"Date: {TODAY_STR}")
     print(f"{'='*90}")
 
@@ -242,7 +231,7 @@ def display_results(results, errors, positions):
 
 def main():
     print(f"{'='*90}")
-    print(f"SIMULATION MONITOR — Quelles positions auraient ete prises ?")
+    print("SIMULATION MONITOR — Quelles positions auraient ete prises ?")
     print(f"{'='*90}")
 
     # Load signals
@@ -261,8 +250,7 @@ def main():
     print(f"  {len(positions)} positions actives (front_exp > {TODAY_STR})")
 
     for p in positions:
-        ps = f"/{p['put_strike']:.0f}" if p["put_strike"] != p["strike"] else ""
-        print(f"    {p['ticker']:>6s} {p['combo']:>5s} K={p['strike']:.0f}{ps} "
+        print(f"    {p['ticker']:>6s} {p['combo']:>5s} K={p['strike']:.0f} "
               f"${p['cost_per_share']:.2f} FF={p['ff']:.1f}% "
               f"({p['entry_date']}) {p['front_exp']}->{p['back_exp']}")
 

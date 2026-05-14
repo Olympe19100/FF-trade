@@ -3,7 +3,6 @@
 import sys
 import subprocess
 import threading
-import numpy as np
 import pandas as pd
 from datetime import datetime
 
@@ -16,7 +15,7 @@ from core.portfolio import (
 )
 from core.trader import enter_new_positions, close_expiring_positions
 from api.models import EnterRequest, AutoManageRequest
-from api.ibkr_worker import ib_state, order_log, run_in_ib_thread, log_order
+from api.ibkr_worker import ib_state, run_in_ib_thread, log_order
 
 router = APIRouter(prefix="/api")
 
@@ -203,10 +202,6 @@ async def api_auto_manage(req: AutoManageRequest | None = None):
                 result["filtered_ba"] = rejected["ticker"].tolist()
                 signals = signals[signals["ba_pct"] <= BA_PCT_MAX]
 
-            # Double calendars only — reject singles (no put leg)
-            if not signals.empty:
-                signals = signals[signals["dbl_cost"].notna() & (signals["dbl_cost"] > 0)]
-
             # 3. Load portfolio, identify expired positions
             portfolio = load_portfolio()
             today_str = datetime.now().strftime("%Y-%m-%d")
@@ -274,9 +269,8 @@ async def api_auto_manage(req: AutoManageRequest | None = None):
             signals_info = []
             sig_rows = []
             for _, r in eligible.iterrows():
-                has_dbl = pd.notna(r.get("dbl_cost")) and r["dbl_cost"] > 0
-                cps = r["dbl_cost"] if has_dbl else r["call_cost"]
-                n_legs = 4 if has_dbl else 2
+                cps = r["call_cost"]
+                n_legs = 2
                 signals_info.append((r["ticker"], cps, n_legs))
                 sig_rows.append(r)
 
@@ -286,11 +280,7 @@ async def api_auto_manage(req: AutoManageRequest | None = None):
             for (ticker, contracts, deployed), row in zip(sizing, sig_rows):
                 if contracts <= 0:
                     continue
-                has_dbl = pd.notna(row.get("dbl_cost")) and row["dbl_cost"] > 0
-                cps = row["dbl_cost"] if has_dbl else row["call_cost"]
-                spread_type = "double" if has_dbl else "single"
-                n_legs = 4 if has_dbl else 2
-                put_strike = row.get("put_strike") if has_dbl else None
+                cps = row["call_cost"]
 
                 add_position(
                     portfolio,
@@ -301,10 +291,9 @@ async def api_auto_manage(req: AutoManageRequest | None = None):
                     back_exp=str(row["back_exp"]),
                     contracts=contracts,
                     cost_per_share=float(cps),
-                    spread_type=spread_type,
+                    spread_type="single",
                     ff=float(row["ff"]),
-                    n_legs=n_legs,
-                    put_strike=float(put_strike) if put_strike is not None and pd.notna(put_strike) else None,
+                    n_legs=2,
                 )
                 result["added"].append({"ticker": ticker, "contracts": contracts,
                                         "cost": round(float(cps), 2)})

@@ -1,0 +1,63 @@
+[2026-05-01 15:00:08] [INFO] DAEMON: [SCAN] Starting scheduled scan...
+[2026-05-01 15:00:08] [INFO] ============================================================
+[2026-05-01 15:00:08] [INFO] AUTOPILOT - SCAN
+[2026-05-01 15:00:08] [INFO] ============================================================
+[2026-05-01 15:01:15] [INFO] SCAN: Found 22 signals (top 5: XYZ, BMY, KO, DOW, MRK)
+[2026-05-01 15:01:15] [DEBUG]   XYZ 20-47 FF=0.533 dbl=$nan
+[2026-05-01 15:01:15] [DEBUG]   BMY 20-76 FF=0.270 dbl=$2.76
+[2026-05-01 15:01:15] [DEBUG]   KO 20-76 FF=0.215 dbl=$2.15
+[2026-05-01 15:01:15] [DEBUG]   DOW 20-76 FF=0.197 dbl=$nan
+[2026-05-01 15:01:15] [DEBUG]   MRK 20-76 FF=0.178 dbl=$3.74
+[2026-05-01 15:01:15] [INFO] DAEMON: [SCAN] Scan completed
+[2026-05-01 16:15:15] [INFO] DAEMON: [TRADE] Starting scheduled trade...
+[2026-05-01 16:15:15] [INFO] TRADE_WEB Step 1: Closing expiring positions
+[2026-05-01 16:15:15] [INFO] TRADE_WEB Step 2: Entering new positions
+[2026-05-01 16:15:17] [ERROR] TRADE_WEB error: Not connected
+Traceback (most recent call last):
+  File "C:\Users\ANTEC MSI\Desktop\pro\Option trading\core\autopilot.py", line 935, in run_trade_web
+    from core.trader import close_expiring_positions, enter_new_positions
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ANTEC MSI\Desktop\pro\Option trading\core\trader.py", line 437, in enter_new_positions
+    info = get_account_info(ib, acct)
+  File "C:\Users\ANTEC MSI\Desktop\pro\Option trading\core\trader.py", line 97, in get_account_info
+    summary = ib.accountSummary(acct)
+  File "C:\Users\ANTEC MSI\AppData\Roaming\Python\Python314\site-packages\ib_insync\ib.py", line 413, in accountSummary
+    return self._run(self.accountSummaryAsync(account))
+           ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ANTEC MSI\AppData\Roaming\Python\Python314\site-packages\ib_insync\ib.py", line 318, in _run
+    return util.run(*awaitables, timeout=self.RequestTimeout)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ANTEC MSI\AppData\Roaming\Python\Python314\site-packages\ib_insync\util.py", line 341, in run
+    result = loop.run_until_complete(task)
+  File "C:\Python314\Lib\asyncio\base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\ANTEC MSI\AppData\Roaming\Python\Python314\site-packages\ib_insync\ib.py", line 1873, in accountSummaryAsync
+    await self.reqAccountSummaryAsync()
+          ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\ANTEC MSI\AppData\Roaming\Python\Python314\site-packages\ib_insync\ib.py", line 1881, in reqAccountSummaryAsync
+    reqId = self.client.getReqId()
+  File "C:\Users\ANTEC MSI\AppData\Roaming\Python\Python314\site-packages\ib_insync\client.py", line 160, in getReqId
+    raise ConnectionError('Not connected')
+ConnectionError: Not connected
+[2026-05-01 16:15:17] [INFO] DAEMON: [TRADE] Trade completed: 0 closed, 0 entered
+[2026-05-01 16:15:17] [ERROR] DAEMON: [TRADE] Error: TRADE_WEB error: Not connected
+[2026-05-01 16:16:49] [INFO] DAEMON: [DAEMON] Daemon stopped
+[2026-05-01 16:16:59] [INFO] DAEMON: [DAEMON] Daemon started — schedule: 09:00 Scan | 10:15 Trade | 16:30 Monitor
+[2026-05-01 16:19:24] [INFO] DAEMON: [DAEMON] Daemon started — schedule: 09:00 Scan | 10:15 Trade | 16:30 Monitor
+[2026-05-01 16:21:57] [INFO] DAEMON: [DAEMON] Daemon stopped
+[2026-05-01 16:33:23] [INFO] DAEMON: [DAEMON] Daemon started — schedule: 09:00 Scan | 10:15 Trade | 16:30 Monitor
+[2026-05-01 16:40:33] [INFO] DAEMON: [DAEMON] Daemon stopped
+[2026-05-01 16:40:53] [INFO] DAEMON: [DAEMON] Daemon started — schedule: 09:00 Scan | 10:15 Trade | 16:30 Monitor
+[2026-05-01 22:30:23] [INFO] DAEMON: [MONITOR] Starting scheduled monitor + report...
+[2026-05-01 22:30:23] [INFO] ============================================================
+[2026-05-01 22:30:23] [INFO] AUTOPILOT - MONITOR (ThetaData)
+[2026-05-01 22:30:23] [INFO] ============================================================
+[2026-05-01 22:30:23] [INFO] MONITOR: Pricing 20 active positions via ThetaData
+[2026-05-01 22:30:33] [INFO] MONITOR: Snapshot saved to C:\Users\ANTEC MSI\Desktop\pro\Option trading\state\monitor_20260501.json
+[2026-05-01 22:30:33] [INFO] ============================================================
+[2026-05-01 22:30:33] [INFO] AUTOPILOT - REPORT
+[2026-05-01 22:30:33] [INFO] ============================================================
+[2026-05-01 22:30:33] [INFO] Report generated (4207 chars)
+[2026-05-01 22:30:33] [INFO] Email disabled in config, skipping
+[2026-05-01 22:30:33] [INFO] DAEMON: [MONITOR] Monitor + report completed

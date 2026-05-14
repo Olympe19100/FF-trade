@@ -15,7 +15,7 @@ print(f"Stock: ${stock_px}, Last trade: {data['lastTradeDate']}")
 print(f"Expirations: {len(data['data'])}")
 
 # Show all expirations
-print(f"\n=== ALL EXPIRATIONS ===")
+print("\n=== ALL EXPIRATIONS ===")
 for exp_data in data["data"]:
     exp_date = exp_data["expirationDate"]
     dte = (pd.Timestamp(exp_date) - pd.Timestamp(today)).days
@@ -24,7 +24,7 @@ for exp_data in data["data"]:
     print(f"  {exp_date}  DTE={dte:4d}  calls={len(calls):4d}  puts={len(puts):4d}")
 
 # Show ATM calls for first 5 expirations with DTE > 15
-print(f"\n=== ATM CALLS ===")
+print("\n=== ATM CALLS ===")
 for exp_data in data["data"]:
     exp_date = exp_data["expirationDate"]
     dte = (pd.Timestamp(exp_date) - pd.Timestamp(today)).days

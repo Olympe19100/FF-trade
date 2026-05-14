@@ -10,7 +10,6 @@ import numpy as np
 import pandas as pd
 import sqlite3
 from pathlib import Path
-from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.config import CACHE, DB
@@ -252,7 +251,7 @@ spreads_filtered = spreads[
 print(f"  Spreads after basic filters: {len(spreads_filtered):,}")
 print(f"  Returns computed:            {len(df):,}")
 print(f"  Drop rate: {1 - len(df)/len(spreads_filtered):.1%}")
-print(f"  (If dropped trades are mostly losers, this creates upward bias)")
+print("  (If dropped trades are mostly losers, this creates upward bias)")
 
 # ══════════════════════════════════════════════════════════
 # 8. KEY DIAGNOSTIC: What does the return look like if we
@@ -272,7 +271,7 @@ print(f"  Negative/zero spread_cost: {neg_cost} (should be 0 after filter)")
 
 # Check: typical spread_cost relative to stock price
 df["cost_pct"] = df["spread_cost"] / df["underlying_price"] * 100
-print(f"\n  spread_cost as % of stock price:")
+print("\n  spread_cost as % of stock price:")
 print(f"    mean={df['cost_pct'].mean():.3f}%  "
       f"median={df['cost_pct'].median():.3f}%")
 print(f"    p5={df['cost_pct'].quantile(0.05):.4f}%  "
@@ -286,7 +285,7 @@ print("9. EXIT TIMING: how far is exit_date from front_exp?")
 print("=" * 70)
 
 df["exp_gap"] = df["exit_date"] - df["front_exp"]
-print(f"  exit_date - front_exp gap:")
+print("  exit_date - front_exp gap:")
 print(f"    mean={df['exp_gap'].mean():.2f}  median={df['exp_gap'].median():.0f}")
 print(f"    min={df['exp_gap'].min()}  max={df['exp_gap'].max()}")
 # If gap > 0, we're exiting AFTER front expiry, which is wrong

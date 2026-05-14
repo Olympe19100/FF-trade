@@ -1,0 +1,59 @@
+{
+  "date": "2026-05-08",
+  "positions": [
+    {
+      "ticker": "HAL",
+      "combo": "13-69",
+      "contracts": 10,
+      "strike": 44.0,
+      "put_strike": 41.0,
+      "entry_cost": 2.83,
+      "current_cost": 2.12,
+      "unrealized_pnl": -736.0,
+      "return_pct": -0.26,
+      "front_dte": 13,
+      "stock_px": 39.12
+    },
+    {
+      "ticker": "LRCX",
+      "combo": "13-40",
+      "contracts": 1,
+      "strike": 280.0,
+      "put_strike": 250.0,
+      "entry_cost": 14.18,
+      "current_cost": 14.08,
+      "unrealized_pnl": -12.1,
+      "return_pct": -0.0085,
+      "front_dte": 13,
+      "stock_px": 286.52
+    },
+    {
+      "ticker": "AMD",
+      "combo": "21-70",
+      "contracts": 6,
+      "strike": 440.0,
+      "put_strike": 390.0,
+      "entry_cost": 41.6,
+      "current_cost": 38.42,
+      "unrealized_pnl": -1920.6,
+      "return_pct": -0.0769,
+      "front_dte": 20,
+      "stock_px": 408.46
+    },
+    {
+      "ticker": "INTC",
+      "combo": "21-70",
+      "contracts": 10,
+      "strike": 120.0,
+      "put_strike": 105.0,
+      "entry_cost": 13.85,
+      "current_cost": 13.35,
+      "unrealized_pnl": -526.0,
+      "return_pct": -0.038,
+      "front_dte": 20,
+      "stock_px": 109.62
+    }
+  ],
+  "errors": [],
+  "total_unrealized_pnl": -3194.7
+}

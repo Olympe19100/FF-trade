@@ -161,7 +161,7 @@ def check_cost_verification(trades_df):
         check("Cost verification (no cost_per_contract column)", False)
         return
 
-    n_legs = 4  # double calendar default
+    n_legs = 2  # single calendar (call only)
     slippage_entry = bt.SLIPPAGE_PER_LEG * n_legs
     comm_entry = bt.COMMISSION_PER_LEG * n_legs
 

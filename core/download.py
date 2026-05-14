@@ -27,7 +27,6 @@ for mod_name in ["config", "tickers", "database", "downloader"]:
     sys.modules[mod_name] = m
     spec.loader.exec_module(m)
 
-from config import MAX_DTE_DOWNLOAD
 from database import (create_schema, bulk_get_or_create_contracts,
                        upsert_eod_history)
 from downloader import _download_one_ticker, SharedRateLimiter
@@ -202,7 +201,7 @@ def download_daily(start_year=2016, end_year=2026, max_dte=150,
             }
 
             for future in as_completed(futures):
-                root = futures[future]
+                _ = futures[future]
                 try:
                     _, contract_keys, eod_rows, error = future.result()
                     api_calls += 1

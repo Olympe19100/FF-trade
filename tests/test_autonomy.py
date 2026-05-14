@@ -6,10 +6,9 @@ All external dependencies (IBKR, ThetaData, EODHD, SMTP) are mocked so tests run
 
 import json
 import sys
-import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -19,10 +18,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.config import (
-    MAX_POSITIONS, MAX_CONTRACTS, DEFAULT_ALLOC,
+    MAX_POSITIONS, DEFAULT_ALLOC,
     MIN_KELLY_TRADES, KELLY_FRAC, CONTRACT_MULT,
-    COMMISSION_LEG, SLIPPAGE_PER_LEG, SLIPPAGE_BUFFER,
-    CLOSE_DAYS, OPTIMAL_START_ET, OPTIMAL_END_ET,
+    COMMISSION_LEG, SLIPPAGE_PER_LEG,
 )
 
 
@@ -179,7 +177,7 @@ class TestEarningsCascade:
             mock_ibkr.return_value = [{"root": "AAPL", "report_date": rd_int}]
 
             ib_mock = MagicMock()
-            result = get_earnings_dates(tickers, ib=ib_mock)
+            _ = get_earnings_dates(tickers, ib=ib_mock)
 
         mock_ibkr.assert_called_once()
         called_tickers = mock_ibkr.call_args[0][1]
@@ -209,7 +207,7 @@ class TestEarningsCascade:
             mock_proj.return_value = []
 
             ib_mock = MagicMock()
-            result = get_earnings_dates(tickers, ib=ib_mock)
+            _ = get_earnings_dates(tickers, ib=ib_mock)
 
         mock_proj.assert_called_once()
 
@@ -384,7 +382,7 @@ class TestPortfolioLifecycle:
             portfolio = load_portfolio()
             assert portfolio["positions"] == []
 
-            pos = add_position(
+            _ = add_position(
                 portfolio, "AAPL", "30-60", 180.0,
                 "2026-06-01", "2026-07-01", 2, 6.30,
                 "double", 0.35, 4, put_strike=170.0,
@@ -532,15 +530,16 @@ class TestSizingConstraints:
         for ticker, contracts, deployed in result:
             assert contracts >= 1
 
-    def test_sizing_max_contracts_cap(self):
-        """Huge budget → capped at MAX_CONTRACTS per position."""
+    def test_sizing_oi_cap(self):
+        """Huge budget with OI data → capped by OI percentage, not arbitrary limit."""
         from core.portfolio import size_portfolio
 
-        signals = [("AAPL", 2.00, 4)]  # Very cheap
+        # 6-tuple: (ticker, cps, n_legs, ff, ba_pct, min_leg_oi)
+        signals = [("AAPL", 2.00, 2, 0.25, 0.03, 500)]  # OI=500 → cap=25 (5%)
         result = size_portfolio(signals, 1.0, 10_000_000)
 
         for ticker, contracts, deployed in result:
-            assert contracts <= MAX_CONTRACTS
+            assert contracts <= 25  # 5% of OI=500
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -19,13 +19,11 @@ Usage:
 
 import sqlite3
 import pickle
-import hashlib
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from pathlib import Path
 from datetime import date, datetime, timedelta
 from sklearn.linear_model import LinearRegression
 from scipy import stats as sp_stats
@@ -33,9 +31,9 @@ from scipy import stats as sp_stats
 from core.config import (
     DB, CACHE, OUTPUT,
     COMMISSION_LEG, CONTRACT_MULT, MIN_KELLY_TRADES, DEFAULT_ALLOC,
-    SLIPPAGE_BUFFER, get_logger,
+    get_logger,
 )
-from core.pricing import bs_price, implied_vol_scalar
+from core.pricing import implied_vol_scalar
 
 log = get_logger(__name__)
 
@@ -340,12 +338,10 @@ def build_earnings_straddle_history(
             straddle_exit = call_mid_exit + put_mid_exit
 
             # Real bid/ask straddle prices (buy at ask, sell at bid)
-            call_bid_entry = best_atm["call_bid"]
             call_ask_entry = best_atm["call_ask"]
-            put_bid_entry = best_atm["put_bid"]
             put_ask_entry = best_atm["put_ask"]
-            call_bid_exit, call_ask_exit = call_exit[0], call_exit[1]
-            put_bid_exit, put_ask_exit = put_exit[0], put_exit[1]
+            call_bid_exit = call_exit[0]
+            put_bid_exit = put_exit[0]
 
             straddle_entry_ask = call_ask_entry + put_ask_entry  # what we pay
             straddle_exit_bid = call_bid_exit + put_bid_exit      # what we get
@@ -472,7 +468,6 @@ def build_earnings_straddle_history(
             # BA_FILL_FRACTION of the spread is the expected slippage
             entry_spread = straddle_entry_ask - straddle_entry  # full entry spread
             exit_spread = straddle_exit - straddle_exit_bid      # full exit spread
-            slippage_cost = BA_FILL_FRACTION * (entry_spread + exit_spread)
             commission_cost = COMMISSION_LEG * 4 / CONTRACT_MULT  # $0.026/share
             actual_entry = straddle_entry + BA_FILL_FRACTION * entry_spread
             net_return = (straddle_exit - actual_entry - BA_FILL_FRACTION * exit_spread - commission_cost) / actual_entry
@@ -1204,10 +1199,9 @@ def _fetch_live_implied_move(ticker: str, report_date: int) -> float | None:
             exp2_date = third_friday(exp_dt.year + 1, 1)
         else:
             exp2_date = third_friday(exp_dt.year, exp_dt.month + 1)
-        exp2_int = _date_to_int(exp2_date)
-        
-        c2 = df_chain[(df_chain["right"] == "C") & (df_chain["expiration"] == exp2_int) & (df_chain["strike"] == atm_strike)]
-        p2 = df_chain[(df_chain["right"] == "P") & (df_chain["expiration"] == exp2_int) & (df_chain["strike"] == atm_strike)]
+        exp2_str = exp2_date.strftime("%Y-%m-%d")
+        c2 = chain[(chain["type"] == "call") & (chain["exp_date"] == exp2_str) & (chain["strike"] == atm_strike)]
+        p2 = chain[(chain["type"] == "put") & (chain["exp_date"] == exp2_str) & (chain["strike"] == atm_strike)]
         
         ambient_iv = atm_iv  # fallback
         if not c2.empty and not p2.empty:

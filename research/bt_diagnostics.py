@@ -5,9 +5,7 @@ Check for biases and artifacts in the backtest.
 import sys
 import numpy as np
 import pandas as pd
-import pickle
 from pathlib import Path
-from collections import Counter
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.config import CACHE
@@ -89,7 +87,7 @@ ticker_stats = sub.groupby("root").agg(
     mean_ret=("ret", "mean"),
     win_rate=("ret", lambda x: (x > 0).mean())
 ).sort_values("n", ascending=False)
-print(f"  Top 10 tickers by count:")
+print("  Top 10 tickers by count:")
 for _, row in ticker_stats.head(10).iterrows():
     print(f"    {row.name:6s}: {row['n']:4.0f} trades, "
           f"ret={row['mean_ret']:.2f}, wr={row['win_rate']:.1%}")
@@ -177,7 +175,7 @@ print(f"  Net P&L (code):          ${net_pnl:,.0f}")
 print(f"  Correct P&L:             ${correct_pnl2:,.0f}")
 print(f"  Difference (bug):        ${net_pnl - correct_pnl2:,.0f}")
 if abs(net_pnl - correct_pnl2) > 0.01:
-    print(f"  ** SLIPPAGE DOUBLE-COUNT: entry slippage deducted twice!")
+    print("  ** SLIPPAGE DOUBLE-COUNT: entry slippage deducted twice!")
     print(f"     Impact per trade: ${abs(net_pnl - correct_pnl2)/contracts:.2f}/contract")
 
 # ── 7. HOLDING PERIOD vs ASSUMED DTE ──

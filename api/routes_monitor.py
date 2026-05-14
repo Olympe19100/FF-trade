@@ -3,12 +3,28 @@
 import asyncio
 import json
 import logging
+import math
 import threading
 import time
+import numpy as np
 import pandas as pd
 from datetime import datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+
+def _sanitize(obj):
+    """Replace NaN/inf with None recursively so JSON serialization won't crash."""
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, (np.floating, np.integer)):
+        v = float(obj)
+        return None if math.isnan(v) or math.isinf(v) else v
+    return obj
 
 from core.config import STATE
 from core.portfolio import load_portfolio
@@ -121,7 +137,7 @@ def _build_snapshot() -> dict:
     total_pnl = sum(p["unrealized_pnl"] for p in positions)
     now = datetime.now()
 
-    snapshot = {
+    snapshot = _sanitize({
         "type": "snapshot",
         "positions": positions,
         "errors": errors,
@@ -131,7 +147,7 @@ def _build_snapshot() -> dict:
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M:%S"),
         "timestamp": time.time(),
-    }
+    })
 
     # Save to disk (same format as run_monitor)
     try:
@@ -280,13 +296,13 @@ async def api_monitor():
         except Exception:
             pass
 
-    return {
+    return _sanitize({
         "active": active,
         "cached_prices": cached_prices,
         "cached_date": cached_date,
         "n_active": len(active),
         "refresh_running": _state["refresh_running"],
-    }
+    })
 
 
 @router.post("/monitor/refresh")

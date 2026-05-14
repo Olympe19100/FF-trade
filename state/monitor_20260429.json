@@ -1,0 +1,38 @@
+{
+  "type": "snapshot",
+  "positions": [
+    {
+      "ticker": "C",
+      "combo": "15-49",
+      "contracts": 10,
+      "strike": 130.0,
+      "put_strike": 125.0,
+      "entry_cost": 4.86,
+      "current_cost": 4.63,
+      "unrealized_pnl": -256.0,
+      "return_pct": -0.0511,
+      "front_dte": 15,
+      "stock_px": 128.53
+    },
+    {
+      "ticker": "TSLA",
+      "combo": "15-49",
+      "contracts": 1,
+      "strike": 390.0,
+      "put_strike": 365.0,
+      "entry_cost": 18.3,
+      "current_cost": 18.1,
+      "unrealized_pnl": -22.6,
+      "return_pct": -0.0123,
+      "front_dte": 15,
+      "stock_px": 376.02
+    }
+  ],
+  "errors": [],
+  "total_unrealized_pnl": -278.6,
+  "n_active": 2,
+  "n_priced": 2,
+  "date": "2026-04-29",
+  "time": "23:01:20",
+  "timestamp": 1777496480.006732
+}

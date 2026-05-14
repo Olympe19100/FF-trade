@@ -27,8 +27,7 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 from core.config import (
-    DEFAULT_HOST, TWS_PAPER, GW_PAPER, CLIENT_ID,
-    ENFORCE_WINDOW, get_logger,
+    DEFAULT_HOST, TWS_PAPER, GW_PAPER, ENFORCE_WINDOW, get_logger,
 )
 from core.trader import connect_ibkr, verify_paper, create_calendar_legs
 from core.execution import execute_spread, get_combo_price, _build_combo
